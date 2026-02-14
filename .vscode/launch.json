@@ -1,0 +1,76 @@
+
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Gold Standard Engine",
+            "type": "cppvsdbg", 
+            "request": "launch",
+            "program": "${workspaceRoot}/3D_Game_Engine.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": [],
+            "console": "integratedTerminal",
+            "preLaunchTask": "Build Odin Project"
+        }
+    ]
+}
+
+//just put plans here in launch.json to keep main.oin clean.
+// The best looking and performace Game Engine for devices without dedicated GPU
+//1080p Native
+// Engine choice: AABB for physics and Portals/Sectors for rendering ground and walls.
+// Quadtree for Sprites (trees, enemies, grass) rendering and AABB for collision detection or voxels for destructible environments and 
+//less poppy visuals on sprites and 3d models -- no UV math invoved.
+/*
+
+
+    // This keeps your position and velocity data packed tight in memory
+Entity_List :: struct #soa {
+    pos:         [dynamic][2]f32,
+    vel:         [dynamic][2]f32,
+    base_aabb:   [dynamic]AABB,
+    is_voxel:    [dynamic]bool,
+    is_active:   [dynamic]bool,
+}
+// Your "Update" loop just screams through memory
+update_entities :: proc(entities: ^Entity_List, dt: f32) {
+    for _, i in entities.pos {
+        if !entities.is_active[i] do continue
+        
+        entities.pos[i] += entities.vel[i] * dt
+        // Apply friction or gravity here
+    }
+}
+
+Summary of your "Finalized" Tech Stack
+    Engine has to be better than eduke32 Ion Fury engine by adding 3dmodels and similar to source 1 rom Valve.
+    Display: 1080p native 
+
+    Graphics: SDL3 GPU (Vulkan/D3D12 backend).
+
+    World: Sector/Portal rendering.
+
+    Physics: AABB Tree + SoA arrays.
+
+    Objects: Billboards far away to sub-grid voxel for perfect dark 3d enemies to aviod UV math for performace.
+    enermies end up real 3d models, but instead of skin wrrapped skeletal skinning around whole model the textures are place around the model, 
+    , so they can be dismantiled for 3d animation EG an arm shot off with physics looking good. 
+    Not minecraft look.
+     Perfectdark look from the xbox remaster or Doom3 BFG idtech edition so blood splatter looks real and splattered onto the walls.
+     After the blood animation, we render decal animation for blood dripping down the walls.
+
+     The "Gold Standard" Road Map
+
+To keep following the Source/Build Engine hybrid path, your next big architectural milestones are:
+
+    Fixed-Point or Normalized Physics: Ensuring that "sliding" off a wall doesn't lose velocity.
+
+    The Portal Header: A way for a "Triangle" (Wall) to say: "I am not a solid wall; I am a window into Sector #4."
+
+    Voxel Integration: Treating your 3D models as "Sub-Entities" within your #soa list.
+}*/
