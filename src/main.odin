@@ -7,6 +7,14 @@ import "core:fmt"
 VERT_SRC :: #load("../shaders/quad.vert.spv")
 FRAG_SRC :: #load("../shaders/sdf_test.frag.spv")
 
+
+TimeData :: struct ////time added for sphere animation
+{
+    time: f32,
+    _padding: [3]f32, // GPU buffers like to be aligned to 16 bytes
+}
+
+
 main :: proc() {
     if !sdl.Init({.VIDEO}) {
         fmt.eprintln("SDL Init Failed:", sdl.GetError())
@@ -39,31 +47,40 @@ main :: proc() {
     // 1. Create the Vertex Shader Module
     // Define these before the loop
     
+    // Vertex Shader (no resources)
     vert_shader_info := sdl.GPUShaderCreateInfo{
-        code       = raw_data(VERT_SRC),
-        code_size  = uint(len(VERT_SRC)),
-        entrypoint = "main",
-        format     = {.SPIRV},
-        stage      = .VERTEX,
+        code                 = raw_data(VERT_SRC),
+        code_size            = uint(len(VERT_SRC)),
+        entrypoint           = "main",
+        format               = {.SPIRV},
+        stage                = .VERTEX,
+        num_samplers         = 0,
+        num_storage_textures = 0,
+        num_storage_buffers  = 0,
+        num_uniform_buffers  = 0,
+        props                = 0,  // ← Critical! SDL expects this
     }
     vert_shader := sdl.CreateGPUShader(gpu, vert_shader_info)
-    if vert_shader == nil
-    {
+    if vert_shader == nil {
         fmt.eprintln("Vertex Shader Failed:", sdl.GetError())
         return
     }
 
-
+    // Fragment Shader (1 uniform buffer at set=3, binding=0)
     frag_shader_info := sdl.GPUShaderCreateInfo{
-        code       = raw_data(FRAG_SRC),
-        code_size  = uint(len(FRAG_SRC)),
-        entrypoint = "main",
-        format     = {.SPIRV},
-        stage      = .FRAGMENT,
+        code                 = raw_data(FRAG_SRC),
+        code_size            = uint(len(FRAG_SRC)),
+        entrypoint           = "main",
+        format               = {.SPIRV},
+        stage                = .FRAGMENT,
+        num_samplers         = 0,
+        num_storage_textures = 0,
+        num_storage_buffers  = 0,
+        num_uniform_buffers  = 1,
+        props                = 0,  // ← Critical!
     }
     frag_shader := sdl.CreateGPUShader(gpu, frag_shader_info)
-    if frag_shader == nil
-    {
+    if frag_shader == nil {
         fmt.eprintln("Fragment Shader Failed:", sdl.GetError())
         return
     }
@@ -81,7 +98,8 @@ main :: proc() {
     }
     pipeline := sdl.CreateGPUGraphicsPipeline(gpu, pip_info)
 
-        running := true
+
+        running := true // main loop
         for running 
         {
             event: sdl.Event
@@ -92,8 +110,6 @@ main :: proc() {
                 }
             }
 
-
-
         cmd_buffer := sdl.AcquireGPUCommandBuffer(gpu)
         if cmd_buffer == nil { continue }
 
@@ -103,7 +119,6 @@ main :: proc() {
             continue
         }
 
-
         if swapchain_tex != nil
                 {
                     color_target := sdl.GPUColorTargetInfo{
@@ -112,9 +127,16 @@ main :: proc() {
                         load_op = .CLEAR,
                         store_op = .STORE,
                     }
-
                     // ONLY ONE Begin call
                     render_pass := sdl.BeginGPURenderPass(cmd_buffer, &color_target, 1, nil)
+                    // Get time in seconds // PUSH UNIFORMS HERE (inside render pass!)
+                    total_time := f32(sdl.GetTicks()) / 1000.0 
+                    time_struct := TimeData{ time = total_time }
+                    //time added for sphere animation
+                    // Upload the time to the GPU (put this before BeginGPURenderPass)
+                    sdl.PushGPUVertexUniformData(cmd_buffer, 0, &time_struct, size_of(TimeData))  // harmless
+                    sdl.PushGPUFragmentUniformData(cmd_buffer, 0, &time_struct, size_of(TimeData))  // slot 0 = binding 0
+
 
                     sdl.BindGPUGraphicsPipeline(render_pass, pipeline)
                     sdl.DrawGPUPrimitives(render_pass, 3, 1, 0, 0) 
@@ -128,6 +150,10 @@ main :: proc() {
             fmt.eprintln("Submit Failed:", sdl.GetError())
         }
     }
+        // Cleanup shaders and pipeline after the loop
+    sdl.ReleaseGPUShader(gpu, vert_shader)
+    sdl.ReleaseGPUShader(gpu, frag_shader)
+    sdl.ReleaseGPUGraphicsPipeline(gpu, pipeline)
 }
 
 

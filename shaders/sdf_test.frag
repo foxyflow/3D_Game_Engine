@@ -1,5 +1,5 @@
 #version 450
-
+#extension GL_ARB_separate_shader_objects : enable
 
 // The output color for the current pixel
 layout(location = 0) out vec4 fragColor;
@@ -8,7 +8,11 @@ layout(location = 0) out vec4 fragColor;
 In GLSL, we write that as length(p) - radius. If the length of the vector p is greater than the radius, the distance is positive (outside).
  If it's less, it's negative (inside)
 */
-
+// SDL3 GPU uniform: set=3, binding=0 for fragment uniforms
+// (Matches SDL_PushGPUFragmentUniformData slot 0)
+layout(set = 3, binding = 0, std140) uniform TimeBlock {
+    float u_time;  // Your time value
+} ubo;  // Instance name (use ubo. below)
 
 
 // --- Signed Distance Functions (SDFs) ---
@@ -32,10 +36,12 @@ float smin(float a, float b, float k) {
 
 // --- The World Function ---
 float map(vec3 p) {
+    // This will make the sphere bounce up and down over time
+    float bounce = sin(ubo.u_time * 3.0) * 0.5; // Bounce between -0.5 and +0.5 using sin.
     // To move an object UP, you subtract from its position vector.
     // Here, we subtract -0.5 from Y (which is like adding 0.5).
     // This pushes the sphere DOWN toward the floor (y = -1.0).
-    vec3 spherePos = p - vec3(0.0, -0.5, 0.0); 
+    vec3 spherePos = p - vec3(0.0, bounce, 0.0); 
     
     float sphere = sdSphere(spherePos, 1.0); // Use our shifted position
     float floor  = sdPlane(p);               // The floor stays at p.y + 1.0
@@ -45,7 +51,7 @@ float map(vec3 p) {
     return smin(sphere, floor, 0.5); 
 }
 
-// --- Lighting Math ---
+// --- Normal + Lighting Math ---
 
 // Calculates the "Normal" (surface direction) by checking the slope of the distance
 vec3 calcNormal(vec3 p) {
@@ -81,7 +87,8 @@ void main() {
     }
 
     // 4. Shading and Coloring
-    if(t < 20.0) {
+    if(t < 20.0)
+    {
         // We hit an object!
         vec3 p = ro + rd * t;      // The exact point of impact
         vec3 n = calcNormal(p);    // Which way is the surface facing?
@@ -93,7 +100,9 @@ void main() {
         // Final color: (Lighting * BaseColor) + Ambient light
         vec3 baseColor = vec3(0.7647, 0.2353, 0.5333); // Purple
         fragColor = vec4(vec3(diff) * baseColor + 0.1, 1.0);
-    } else {
+        
+    } else
+    {
         // We hit nothing (The Background)
         fragColor = vec4(0.2549, 0.0392, 0.3647, 1.0); 
     }
