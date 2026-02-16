@@ -23,6 +23,7 @@
 //just put plans here in launch.json to keep main.oin clean.
 // The best looking and performace Game Engine for devices without dedicated GPU
 //1080p Native
+    // Raymarching for rendering and AABB for physics, but with a twist: Instead of a BSP tree, we use a Portal/Sector system for rendering and AABB trees for physics.
 // Engine choice: AABB for physics and Portals/Sectors for rendering ground and walls.
 // Quadtree for Sprites (trees, enemies, grass) rendering and AABB for collision detection or voxels for destructible environments and 
 //less poppy visuals on sprites and 3d models -- no UV math invoved.
@@ -74,3 +75,12 @@ To keep following the Source/Build Engine hybrid path, your next big architectur
 
     Voxel Integration: Treating your 3D models as "Sub-Entities" within your #soa list.
 }*/
+
+/*
+3. Pre-rendering "Small Sections"
+
+You suggested pre-rendering sections the player might be in. This is called PVS (Potentially Visible Sets).
+The engine doesn't just calculate what you can see; it calculates what you could see from anywhere in that room.
+    If you blow a hole: You’ve invalidated the "Set." Now, the room you are in can see a room that the "Set" said was impossible.
+    The Modern Fix: On a Pi 5, you could use Dynamic Portals. Instead of a fixed BSP, you treat the "hole" as a new portal. The CPU handles it better than old 90s chips ever could.
+*/

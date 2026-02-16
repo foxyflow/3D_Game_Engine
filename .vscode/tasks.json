@@ -2,9 +2,32 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Compile Shaders",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "& 'C:/Users/L/AppData/Local/Android/Sdk/emulator/lib64/vulkan/glslangValidator.exe' -V --target-env vulkan1.2 shaders/quad.vert -o shaders/quad.vert.spv; & 'C:/Users/L/AppData/Local/Android/Sdk/emulator/lib64/vulkan/glslangValidator.exe' -V --target-env vulkan1.2 shaders/sdf_test.frag -o shaders/sdf_test.frag.spv"
+            ],
+            "problemMatcher": []
+        },
+        {
             "label": "Build Odin Project",
             "type": "shell",
-            "command": "odin build . -debug -out:3D_Game_Engine.exe",
+            "command": "odin build src -debug -out:3D_Game_Engine.exe",
+            "dependsOn": [
+                "Compile Shaders"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Engine",
+            "type": "shell",
+            "command": "./3D_Game_Engine.exe",
+            "dependsOn": [
+                "Build Odin Project"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
