@@ -2,89 +2,101 @@ package main
 
 import sdl "vendor:sdl3"
 import "core:fmt"
+import "core:math"
 
-// The ".." tells Odin to step out of "src" and look in the root folder
+// Ensure you have compiled these to .spv before running!
+// This program is our minimal \"engine shell\" that:
+// - boots SDL3 and the GPU device
+// - sends a small block of scene data to the fragment shader every frame
+// - draws a full‑screen triangle that the SDF ray marcher shades
 VERT_SRC :: #load("../shaders/quad.vert.spv")
 FRAG_SRC :: #load("../shaders/sdf_test.frag.spv")
 
-
-TimeData :: struct ////time added for sphere animation
+// SceneData is the CPU‑side description of what we send to the GPU each frame.
+// In graphics terms this is a Uniform Buffer Object (UBO):
+// - We fill out this struct on the CPU.
+// - SDL3 copies its raw bytes into a GPU uniform buffer.
+// - The GLSL shader has a matching layout (see SceneBlock in sdf_test.frag).
+// std140 just means the fields are tightly and predictably packed in memory.
+// If you change this layout, you must mirror the change in the GLSL UBO.
+SceneData :: struct
 {
-    time: f32,
-    _padding: [3]f32, // GPU buffers like to be aligned to 16 bytes
+    screen: [4]f32, // [width, height, time, _unused]
+    ball:   [4]f32, // [pos_x, pos_y, pos_z, radius]
+    box:    [4]f32, // [pos_x, pos_y, pos_z, scale]
 }
 
-
-main :: proc() {
-    if !sdl.Init({.VIDEO}) {
+main :: proc()
+{
+    if !sdl.Init({.VIDEO})
+    {
         fmt.eprintln("SDL Init Failed:", sdl.GetError())
         return
     }
     defer sdl.Quit()
 
     window := sdl.CreateWindow("SDF Raymarcher", 800, 600, {})
-    if window == nil {
+    if window == nil
+    {
         fmt.eprintln("Window Failed:", sdl.GetError())
         return
     }
     defer sdl.DestroyWindow(window)
 
     gpu := sdl.CreateGPUDevice({.SPIRV}, true, nil)
-    if gpu == nil {
+    if gpu == nil
+    {
         fmt.eprintln("GPU Device Failed:", sdl.GetError())
         return
     }
     defer sdl.DestroyGPUDevice(gpu)
 
-    if !sdl.ClaimWindowForGPUDevice(gpu, window) {
+    if !sdl.ClaimWindowForGPUDevice(gpu, window)
+    {
         fmt.eprintln("GPU Claim Failed:", sdl.GetError())
         return
     }
 
-
-        // 1. Create the Shader Modules
-    // We wrap your #load data into SDL GPU Shader objects
-    // 1. Create the Vertex Shader Module
-    // Define these before the loop
-    
-    // Vertex Shader (no resources)
+    // --- Shader Creation ---
+    // Create the GPU shader objects from the pre‑compiled SPIR‑V blobs.
+    // These are long‑lived objects; we create them once and reuse them every frame.
     vert_shader_info := sdl.GPUShaderCreateInfo{
-        code                 = raw_data(VERT_SRC),
-        code_size            = uint(len(VERT_SRC)),
-        entrypoint           = "main",
-        format               = {.SPIRV},
-        stage                = .VERTEX,
-        num_samplers         = 0,
-        num_storage_textures = 0,
-        num_storage_buffers  = 0,
-        num_uniform_buffers  = 0,
-        props                = 0,  // ← Critical! SDL expects this
+        code        = raw_data(VERT_SRC),
+        code_size   = uint(len(VERT_SRC)),
+        entrypoint  = "main",
+        format      = {.SPIRV},
+        stage       = .VERTEX,
+        props       = 0,
     }
     vert_shader := sdl.CreateGPUShader(gpu, vert_shader_info)
-    if vert_shader == nil {
+    if vert_shader == nil
+    {
         fmt.eprintln("Vertex Shader Failed:", sdl.GetError())
         return
     }
 
-    // Fragment Shader (1 uniform buffer at set=3, binding=0)
     frag_shader_info := sdl.GPUShaderCreateInfo{
-        code                 = raw_data(FRAG_SRC),
-        code_size            = uint(len(FRAG_SRC)),
-        entrypoint           = "main",
-        format               = {.SPIRV},
-        stage                = .FRAGMENT,
-        num_samplers         = 0,
-        num_storage_textures = 0,
-        num_storage_buffers  = 0,
-        num_uniform_buffers  = 1,
-        props                = 0,  // ← Critical!
+        code        = raw_data(FRAG_SRC),
+        code_size   = uint(len(FRAG_SRC)),
+        entrypoint  = "main",
+        format      = {.SPIRV},
+        stage       = .FRAGMENT,
+        num_uniform_buffers = 1, // Important!
+        props       = 0,
     }
     frag_shader := sdl.CreateGPUShader(gpu, frag_shader_info)
-    if frag_shader == nil {
+    if frag_shader == nil
+    {
         fmt.eprintln("Fragment Shader Failed:", sdl.GetError())
         return
     }
 
+    // --- Pipeline Creation ---
+    // A graphics pipeline describes how vertices and fragments are processed.
+    // Here we build a very simple pipeline:
+    // - one color target (the swapchain image)
+    // - a full‑screen triangle as input
+    // - our SDF fragment shader as the only fragment stage
     pip_info := sdl.GPUGraphicsPipelineCreateInfo{
         target_info = {
             num_color_targets = 1,
@@ -98,66 +110,105 @@ main :: proc() {
     }
     pipeline := sdl.CreateGPUGraphicsPipeline(gpu, pip_info)
 
-
-        running := true // main loop
-        for running 
+    // --- Main Loop ---
+    // Classic game/render loop:
+    // 1) Handle input/events
+    // 2) Build the SceneData for this frame
+    // 3) Send SceneData to the GPU and draw
+    // 4) Present the frame
+    running := true 
+    for running
+    {
+        event: sdl.Event
+        for sdl.PollEvent(&event)
         {
-            event: sdl.Event
-            for sdl.PollEvent(&event) 
+            if event.type == .QUIT
             {
-                if event.type == .QUIT {
-                    running = false
-                }
+                running = false
             }
+        }
 
         cmd_buffer := sdl.AcquireGPUCommandBuffer(gpu)
-        if cmd_buffer == nil { continue }
+        if cmd_buffer == nil 
+        { 
+            fmt.eprintln("Failed to acquire command buffer:", sdl.GetError())
+            continue 
+        }
 
         swapchain_tex: ^sdl.GPUTexture
-        if !sdl.AcquireGPUSwapchainTexture(cmd_buffer, window, &swapchain_tex, nil, nil) {
-            _ = sdl.SubmitGPUCommandBuffer(cmd_buffer) 
+        // Try to get swapchain texture. If failed (e.g. minimized), submit empty buffer and loop.
+        if !sdl.AcquireGPUSwapchainTexture(cmd_buffer, window, &swapchain_tex, nil, nil)
+        {
+            if !sdl.SubmitGPUCommandBuffer(cmd_buffer)
+            {
+                fmt.eprintln("Critical failure during empty submit:", sdl.GetError())
+                return 
+            }
             continue
         }
 
         if swapchain_tex != nil
-                {
-                    color_target := sdl.GPUColorTargetInfo{
-                        texture = swapchain_tex,
-                        clear_color = {0.05, 0.05, 0.1, 1.0},
-                        load_op = .CLEAR,
-                        store_op = .STORE,
-                    }
-                    // ONLY ONE Begin call
-                    render_pass := sdl.BeginGPURenderPass(cmd_buffer, &color_target, 1, nil)
-                    // Get time in seconds // PUSH UNIFORMS HERE (inside render pass!)
-                    total_time := f32(sdl.GetTicks()) / 1000.0 
-                    time_struct := TimeData{ time = total_time }
-                    //time added for sphere animation
-                    // Upload the time to the GPU (put this before BeginGPURenderPass)
-                    sdl.PushGPUVertexUniformData(cmd_buffer, 0, &time_struct, size_of(TimeData))  // harmless
-                    sdl.PushGPUFragmentUniformData(cmd_buffer, 0, &time_struct, size_of(TimeData))  // slot 0 = binding 0
+        {
+            // 1. Prepare Data
+            // Build the SceneData for this frame on the CPU.
+            // Right now this is still a small \"demo\" scene:
+            // - a moving sphere
+            // - a rotating box
+            // - the screen size and elapsed time
+            // Later we will replace these values with data taken from
+            // our structured arrays (world/room description and player state).
+            total_time := f32(sdl.GetTicks()) / 1000.0
+            w, h: i32
+            sdl.GetWindowSize(window, &w, &h) 
+            
+            // Explicit casting for math.sin
+            moveX := f32(math.sin(f64(total_time * 2.0)) * 2.5) 
 
+            scene_struct := SceneData{
+                screen = { f32(w), f32(h), total_time, 0.0 }, 
+                ball   = { moveX, 0.0, 0.0, 0.6 }, 
+                box    = { 0.1882, 0.9373, 0.0392, 0.5 }, 
+            }
 
-                    sdl.BindGPUGraphicsPipeline(render_pass, pipeline)
-                    sdl.DrawGPUPrimitives(render_pass, 3, 1, 0, 0) 
+            // 2. Render Pass
+            color_target := sdl.GPUColorTargetInfo{
+                texture = swapchain_tex,
+                clear_color = {0.05, 0.05, 0.1, 1.0},
+                load_op = .CLEAR,
+                store_op = .STORE,
+            }
+            
+            render_pass := sdl.BeginGPURenderPass(cmd_buffer, &color_target, 1, nil)
+            
+            // Push Packed Data to Binding 0
+            // This call copies our SceneData struct into the fragment‑shader
+            // uniform buffer at binding slot 0 (set = 3, binding = 0 in GLSL).
+            // From the shader's point of view this data is read‑only for the duration
+            // of the frame, which is perfect for camera/world parameters.
+            sdl.PushGPUFragmentUniformData(cmd_buffer, 0, &scene_struct, size_of(SceneData))
 
-                    // ONLY ONE End call
-                    sdl.EndGPURenderPass(render_pass)
-                }
+            sdl.BindGPUGraphicsPipeline(render_pass, pipeline)
+            sdl.DrawGPUPrimitives(render_pass, 3, 1, 0, 0) 
 
-        // Must handle the result of Submit
-        if !sdl.SubmitGPUCommandBuffer(cmd_buffer) {
+            sdl.EndGPURenderPass(render_pass)
+        }
+
+        // 3. Submit
+        if !sdl.SubmitGPUCommandBuffer(cmd_buffer)
+        {
             fmt.eprintln("Submit Failed:", sdl.GetError())
+            running = false 
         }
     }
-        // Cleanup shaders and pipeline after the loop
+
+    // Cleanup
     sdl.ReleaseGPUShader(gpu, vert_shader)
     sdl.ReleaseGPUShader(gpu, frag_shader)
     sdl.ReleaseGPUGraphicsPipeline(gpu, pipeline)
 }
 
 
-// Commented out Sector/portal code for now. We will return to it after we have the SDF raymarcher working.
+
 // package main
 // import sdl "vendor:sdl3"
 // import "core:fmt"
