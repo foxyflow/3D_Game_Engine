@@ -1,7 +1,4 @@
 
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
 {
     "version": "0.2.0",
     "configurations": [
@@ -38,7 +35,7 @@ Entity_List :: struct #soa {
     is_voxel:    [dynamic]bool,
     is_active:   [dynamic]bool,
 }
-// Your "Update" loop just screams through memory
+// The "Update" loop just screams through memory
 update_entities :: proc(entities: ^Entity_List, dt: f32) {
     for _, i in entities.pos {
         if !entities.is_active[i] do continue
@@ -54,7 +51,7 @@ Summary of your "Finalized" Tech Stack
 
     Graphics: SDL3 GPU (Vulkan/D3D12 backend).
 
-    World: Sector/Portal rendering.
+    World: Sector/Portal rendering. Not sure about this with SDF raymarching.
 
     Physics: AABB Tree + SoA arrays.
 
