@@ -274,7 +274,8 @@ voxelize_room :: proc(tree: ^VoxelAABBTree, level: ^LevelData)
                     if idx >= 0
                     {
                         tree.voxels[idx] = true
-                        tree.wall_ids[idx] = overlap_count == 1 ? first_surf : -1
+                        // Use first_surf even when overlapping (wall+floor) so merge-through works for walls
+                        tree.wall_ids[idx] = first_surf
                     }
                 }
             }
@@ -482,17 +483,11 @@ sphere_vs_tree :: proc(
         if wid >= 0 && wid < 12
         {
             surf_type := wid % SURFACES_PER_ROOM
-            if surf_type == FLOOR_OUTER
+            // Hybrid: skip floor voxels - floor handled by collide_floor_planes (SDF-precise)
+            if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return [3]f32{}
+            if surf_type < 4
             {
-                // Outside floor: solid
-            }
-            else if surf_type == FLOOR_INNER
-            {
-                if player_color == surface_colors[wid] do return [3]f32{}  // match color = fall through
-            }
-            else if surf_type < 4
-            {
-                if player_color == surface_colors[wid] do return [3]f32{}
+                if player_color == surface_colors[wid] do return [3]f32{}  // walls: match color = merge through
             }
         }
         hit, p := sphere_vs_aabb(center, radius, node.box)
@@ -540,8 +535,8 @@ resolve_collision :: proc(
     }
 }
 
-// Floor plane collision: exact plane test per room. No voxel discretization.
-// Merge-through when player color matches floor. Dead zone avoids boundary jitter.
+// Floor plane collision: exact plane test per room + level extent for gaps.
+// Merge-through when player color matches floor. Gaps between rooms always solid.
 collide_floor_planes :: proc(
     level: ^LevelData,
     pos: ^[3]f32,
@@ -550,18 +545,38 @@ collide_floor_planes :: proc(
     surface_colors: [12]i32,
 )
 {
-    dead_zone: f32 = 0.002  // ignore micro-penetration to prevent shake
+    dead_zone: f32 = 0.002
+    floor_clearance: f32 = 0.04  // keep player slightly above floor (reduces visual sink)
+    target_y: f32 = 1e9  // will be set by room or gap
+
+    level_floor := level_floor_aabb(level)
+    in_level_xz := pos[0] >= level_floor.min[0] && pos[0] <= level_floor.max[0] && pos[2] >= level_floor.min[2] && pos[2] <= level_floor.max[2]
+    floor_y := level_floor.max[1]  // top of floor plane
+
+    in_any_room := false
     for room_idx in 0 ..< len(level.rooms)
     {
         r := level.rooms[room_idx].room
-        floor_color := surface_colors[room_idx * SURFACES_PER_ROOM + FLOOR_INNER]
-        if player_color == floor_color do continue  // merge through (red on red, etc.)
-
         if pos[0] < r.center_x - r.half_x || pos[0] > r.center_x + r.half_x do continue
         if pos[2] < r.center_z - r.half_z || pos[2] > r.center_z + r.half_z do continue
 
-        sphere_bottom := pos[1] - radius
-        penetration := r.floor_y - sphere_bottom
+        in_any_room = true
+        floor_color := surface_colors[room_idx * SURFACES_PER_ROOM + FLOOR_INNER]
+        if player_color == floor_color do continue  // merge through
+
+        target_y = floor_y + radius + floor_clearance
+        break
+    }
+
+    // Gap between rooms: solid floor, no merge-through
+    if !in_any_room && in_level_xz
+    {
+        target_y = floor_y + radius + floor_clearance
+    }
+
+    if target_y < 1e8
+    {
+        penetration := target_y - pos[1]
         if penetration > dead_zone
         {
             pos[1] += penetration

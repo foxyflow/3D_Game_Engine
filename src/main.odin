@@ -512,7 +512,8 @@ main :: proc()
         rot_speed: f32 = edit_mode ? 0.25 : 0.4   // orbit speed
         gravity:    f32 = 12.0  // downward acceleration
         jump_vel:   f32 = 8.0   // upward velocity on jump
-        rest_y := floor_y + player.collision_radius
+        floor_clearance: f32 = 0.04  // match collide_floor_planes
+        rest_y := floor_y + player.collision_radius + floor_clearance
         matching_floor := (player.color == surface_colors[4]) || (player.color == surface_colors[10])
 
         // Jump: Space when on solid floor (not matching color)
@@ -565,11 +566,12 @@ main :: proc()
             if key_pressed(keys, sdl.Scancode.Y) do player.color = 3
         }
 
-        // Collision: voxel tree only (floor plane removed - was fighting voxel and causing shake)
+        // Collision: hybrid - voxel for walls, floor planes for floor (SDF-precise, no voxel gaps)
         if tree_root >= 0
         {
             resolve_collision(&tree, tree_root, &player.pos, player.collision_radius, player.color, surface_colors, 12)
         }
+        collide_floor_planes(&level, &player.pos, player.collision_radius, player.color, surface_colors)
 
         // Sanity: only reset on actual NaN (position corruption)
         px, py, pz := player.pos[0], player.pos[1], player.pos[2]
