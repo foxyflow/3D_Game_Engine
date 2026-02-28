@@ -1,0 +1,53 @@
+{
+  "wall_thickness": 0.25,
+  "voxel_size": 0.25,
+  "edit_mode": true,
+  "player": {
+    "color": "yellow",
+    "spawn_x": 0.125,
+    "spawn_z": 0.125,
+    "spawn_height": 2.0
+  },
+  "rooms": [
+    {
+      "label": "Main Room",
+      "room": {
+        "center_x": 0,
+        "center_z": 0,
+        "half_x": 4,
+        "half_z": 6,
+        "height": 3,
+        "floor_y": -1
+      },
+      "floor": {
+        "color": "blue"
+      },
+      "walls": [
+        { "type": "left", "color": "red" },
+        { "type": "right", "color": "red" },
+        { "type": "back", "color": "red" },
+        { "type": "front", "color": "red" }
+      ]
+    },
+    {
+      "label": "Side Room",
+      "room": {
+        "center_x": 8,
+        "center_z": 0,
+        "half_x": 2,
+        "half_z": 3,
+        "height": 3,
+        "floor_y": -1
+      },
+      "floor": {
+        "color": "red"
+      },
+      "walls": [
+        { "type": "left", "color": "blue" },
+        { "type": "right", "color": "blue" },
+        { "type": "back", "color": "blue" },
+        { "type": "front", "color": "blue" }
+      ]
+    }
+  ]
+}

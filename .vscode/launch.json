@@ -1,32 +1,33 @@
-
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch Gold Standard Engine",
-            "type": "cppvsdbg", 
+            "name": "Debug Odin (3D Game Engine)",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceRoot}/3D_Game_Engine.exe",
+            "program": "${workspaceFolder}/3D_Game_Engine.exe",
             "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceRoot}",
-            "environment": [],
-            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
             "preLaunchTask": "Build Odin Project"
+        },
+        {
+            "name": "Debug Odin (no pre-build)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/3D_Game_Engine.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
 
-//just put plans here in launch.json to keep main.oin clean.
-// The best looking and performace Game Engine for devices without dedicated GPU
-//1080p Native
-    // Raymarching for rendering and AABB for physics, but with a twist: Instead of a BSP tree, we use a Portal/Sector system for rendering and AABB trees for physics.
-// Engine choice: AABB for physics and Portals/Sectors for rendering ground and walls.
+
+
+    
+
 // Quadtree for Sprites (trees, enemies, grass) rendering and AABB for collision detection or voxels for destructible environments and 
-//less poppy visuals on sprites and 3d models -- no UV math invoved.
+
 /*
-
-
     // This keeps your position and velocity data packed tight in memory
 Entity_List :: struct #soa {
     pos:         [dynamic][2]f32,
@@ -46,17 +47,14 @@ update_entities :: proc(entities: ^Entity_List, dt: f32) {
 }
 
 Summary of your "Finalized" Tech Stack
-    Engine has to be better than eduke32 Ion Fury engine by adding 3dmodels and similar to source 1 rom Valve.
-    Display: 1080p native 
-
+    
     Graphics: SDL3 GPU (Vulkan/D3D12 backend).
-
-    World: Sector/Portal rendering. Not sure about this with SDF raymarching.
+    Rendering SDF sphere tracing.
 
     Physics: AABB Tree + SoA arrays.
 
     Objects: Billboards far away to sub-grid voxel for perfect dark 3d enemies to aviod UV math for performace.
-    enermies end up real 3d models, but instead of skin wrrapped skeletal skinning around whole model the textures are place around the model, 
+    Enermies end up real 3d models, but instead of skin wrrapped skeletal skinning around whole model the textures are place around the model, 
     , so they can be dismantiled for 3d animation EG an arm shot off with physics looking good. 
     Not minecraft look.
      Perfectdark look from the xbox remaster or Doom3 BFG idtech edition so blood splatter looks real and splattered onto the walls.
@@ -64,20 +62,19 @@ Summary of your "Finalized" Tech Stack
 
      The "Gold Standard" Road Map
 
-To keep following the Source/Build Engine hybrid path, your next big architectural milestones are:
+
 
     Fixed-Point or Normalized Physics: Ensuring that "sliding" off a wall doesn't lose velocity.
 
-    The Portal Header: A way for a "Triangle" (Wall) to say: "I am not a solid wall; I am a window into Sector #4."
 
     Voxel Integration: Treating your 3D models as "Sub-Entities" within your #soa list.
 }*/
 
 /*
-3. Pre-rendering "Small Sections"
+ Pre-rendering "Small Sections"
 
-You suggested pre-rendering sections the player might be in. This is called PVS (Potentially Visible Sets).
-The engine doesn't just calculate what you can see; it calculates what you could see from anywhere in that room.
+ Suggested pre-rendering sections the player might be in. This is called PVS (Potentially Visible Sets).
+ The engine doesn't just calculate what you can see; it calculates what you could see from anywhere in that room.
     If you blow a hole: You’ve invalidated the "Set." Now, the room you are in can see a room that the "Set" said was impossible.
     The Modern Fix: On a Pi 5, you could use Dynamic Portals. Instead of a fixed BSP, you treat the "hole" as a new portal. The CPU handles it better than old 90s chips ever could.
 */

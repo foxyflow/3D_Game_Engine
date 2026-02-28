@@ -1,0 +1,12 @@
+---
+description: Save demonstration images to E drive (user's C drive is full)
+alwaysApply: true
+---
+
+# Demo Images Storage
+
+When generating or saving demonstration images (diagrams, concept art, screenshots for documentation):
+
+- **Save to:** `E:\demo_images\` (or `E:\` root)
+- **Do NOT save to:** C drive paths (e.g. `C:\Users\...`, `%APPDATA%`, etc.) — user's C drive is full
+- Project workspace is on E drive; prefer E: for any generated assets meant for demonstration

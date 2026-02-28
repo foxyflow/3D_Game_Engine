@@ -14,9 +14,13 @@
         {
             "label": "Build Odin Project",
             "type": "shell",
-            "command": "odin build src -debug -out:3D_Game_Engine.exe",
+            "command": ".\\build.bat",
+            "args": [],
             "dependsOn": ["Compile Shaders"],
             "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "problemMatcher": []
         },
         {
