@@ -446,6 +446,21 @@ sphere_vs_aabb :: proc(center: [3]f32, radius: f32, box: AABB) -> (hit: bool, pu
     return true, [3]f32{ dx * inv * push_mag, dy * inv * push_mag, dz * inv * push_mag }
 }
 
+// Sphere vs sphere: push to separate. Used for player vs stuck projectiles.
+sphere_vs_sphere :: proc(center_a: [3]f32, radius_a: f32, center_b: [3]f32, radius_b: f32) -> (hit: bool, push: [3]f32)
+{
+    dx := center_b[0] - center_a[0]
+    dy := center_b[1] - center_a[1]
+    dz := center_b[2] - center_a[2]
+    dist_sq := dx*dx + dy*dy + dz*dz
+    sum_r := radius_a + radius_b
+    if dist_sq >= sum_r * sum_r || dist_sq < 0.0001 do return false, [3]f32{}
+    dist := math.sqrt(dist_sq)
+    push_mag := sum_r - dist
+    inv := 1.0 / dist
+    return true, [3]f32{ -dx * inv * push_mag, -dy * inv * push_mag, -dz * inv * push_mag }  // push A away from B
+}
+
 // Fast overlap test: sphere vs AABB. Used to cull tree branches during traversal.
 sphere_intersects_aabb :: proc(center: [3]f32, radius: f32, box: AABB) -> bool
 {
@@ -512,6 +527,86 @@ sphere_vs_tree :: proc(
         total_push[2] += p[2]
     }
     return total_push
+}
+
+// Returns true if sphere overlaps a yellow wall (for slowdown when melting through).
+projectile_in_yellow_wall :: proc(
+    tree: ^VoxelAABBTree,
+    root: i32,
+    center: [3]f32,
+    radius: f32,
+    surface_colors: [12]i32,
+) -> bool
+{
+    if root < 0 do return false
+    if root >= i32(len(tree.nodes)) do return false
+
+    node := tree.nodes[root]
+    if !sphere_intersects_aabb(center, radius, node.box) do return false
+
+    if node.left < 0 && node.right < 0
+    {
+        wid := node.wall_id
+        if wid >= 0 && wid < 12
+        {
+            surf_type := wid % SURFACES_PER_ROOM
+            if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return false
+            if surf_type < 4 && surface_colors[wid] == WALL_COLOR_YELLOW do return true
+        }
+        return false
+    }
+
+    n := i32(len(tree.nodes))
+    if node.left >= 0 && node.left < n
+    {
+        if projectile_in_yellow_wall(tree, node.left, center, radius, surface_colors) do return true
+    }
+    if node.right >= 0 && node.right < n
+    {
+        if projectile_in_yellow_wall(tree, node.right, center, radius, surface_colors) do return true
+    }
+    return false
+}
+
+// Returns (hit, push): true if sphere hits non-yellow wall; push = vector to surface (for sticking).
+projectile_hits_wall :: proc(
+    tree: ^VoxelAABBTree,
+    root: i32,
+    center: [3]f32,
+    radius: f32,
+    projectile_color: i32,
+    surface_colors: [12]i32,
+) -> (hit: bool, push: [3]f32)
+{
+    if root < 0 do return false, [3]f32{}
+    if root >= i32(len(tree.nodes)) do return false, [3]f32{}
+
+    node := tree.nodes[root]
+    if !sphere_intersects_aabb(center, radius, node.box) do return false, [3]f32{}
+
+    if node.left < 0 && node.right < 0
+    {
+        wid := node.wall_id
+        if wid >= 0 && wid < 12
+        {
+            surf_type := wid % SURFACES_PER_ROOM
+            if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return false, [3]f32{}
+            if surf_type < 4 && projectile_color == surface_colors[wid] do return false, [3]f32{}
+        }
+        h, p := sphere_vs_aabb(center, radius, node.box)
+        return h, p
+    }
+
+    n := i32(len(tree.nodes))
+    if node.left >= 0 && node.left < n
+    {
+        if h, p := projectile_hits_wall(tree, node.left, center, radius, projectile_color, surface_colors); h do return true, p
+    }
+    if node.right >= 0 && node.right < n
+    {
+        if h, p := projectile_hits_wall(tree, node.right, center, radius, projectile_color, surface_colors); h do return true, p
+    }
+    return false, [3]f32{}
 }
 
 // Step 4 (per frame): Iteratively push player out of walls and floors. Up to max_iter passes.

@@ -6,7 +6,34 @@
     "color": "yellow",
     "spawn_x": 0.125,
     "spawn_z": 0.125,
-    "spawn_height": 2.0
+    "spawn_height": 2,
+    "move_speed": 10,
+    "move_accel": 25,
+    "move_decel": 18,
+    "rot_speed": 0.9
+  },
+  "lighting": {
+    "ambient": 0.02,
+    "moon": {
+      "direction": [1, 3, -2],
+      "color": [0.5, 0.55, 0.8],
+      "intensity": 0.6
+    },
+    "point_brightness": 2,
+    "point_attenuation": 0.3,
+    "use_wall_hue": true,
+    "switch_radius": 0.25,
+    "switch_visual_radius": 0.15,
+    "switches": [
+      { "label": "Main Room - Left", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Main Room - Right", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Main Room - Back", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Main Room - Front", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Side Room - Left", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Side Room - Right", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Side Room - Back", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0 },
+      { "label": "Side Room - Front", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0 }
+    ]
   },
   "rooms": [
     {
@@ -19,12 +46,10 @@
         "height": 3,
         "floor_y": -1
       },
-      "floor": {
-        "color": "blue"
-      },
+      "floor": { "color": "blue" },
       "walls": [
-        { "type": "left", "color": "red" },
-        { "type": "right", "color": "red" },
+        { "type": "left", "color": "yellow" },
+        { "type": "right", "color": "yellow" },
         { "type": "back", "color": "red" },
         { "type": "front", "color": "red" }
       ]
@@ -39,14 +64,12 @@
         "height": 3,
         "floor_y": -1
       },
-      "floor": {
-        "color": "red"
-      },
+      "floor": { "color": "red" },
       "walls": [
-        { "type": "left", "color": "blue" },
+        { "type": "left", "color": "yellow" },
         { "type": "right", "color": "blue" },
-        { "type": "back", "color": "blue" },
-        { "type": "front", "color": "blue" }
+        { "type": "back", "color": "green" },
+        { "type": "front", "color": "green" }
       ]
     }
   ]
