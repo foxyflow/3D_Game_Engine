@@ -214,7 +214,66 @@ level_floor_aabb :: proc(level: ^LevelData) -> AABB
     }
 }
 
+// Wall type string for index w (0=left, 1=right, 2=back, 3=front)
+wall_type_for_index :: proc(w: int) -> string
+{
+    switch w
+    {
+    case 0: return "left"
+    case 1: return "right"
+    case 2: return "back"
+    case 3: return "front"
+    case:   return "left"
+    }
+}
+
+// Collision slit is smaller than visual so ball must squash to fit. 0.55 = collision slit 55% of visual.
+COLLISION_SLIT_SCALE :: 0.55
+
+// True if voxel center is in a gap region (horizontal at bottom, vertical slit, or jump-through hole). Skip filling.
+// gap_hole_offset: offset along wall (left/right: Z; back/front: X). 0 = centered.
+// gap_hole_offset_y: vertical offset, moves hole up (+) or down (-) from gap_hole_bottom.
+voxel_in_wall_gap :: proc(vbox: AABB, r: ^RoomData, w: int, gap_bottom: f32, gap_slit: f32, gap_hole_w: f32, gap_hole_h: f32, gap_hole_b: f32, gap_hole_offset: f32, gap_hole_offset_y: f32) -> bool
+{
+    cx := (vbox.min[0] + vbox.max[0]) * 0.5
+    cy := (vbox.min[1] + vbox.max[1]) * 0.5
+    cz := (vbox.min[2] + vbox.max[2]) * 0.5
+
+    if gap_bottom > 0.001 && cy < r.floor_y + gap_bottom do return true  // horizontal gap at bottom
+
+    if gap_slit > 0.001
+    {
+        slit_half := gap_slit * 0.5 * COLLISION_SLIT_SCALE  // smaller collision gap = must squash
+        switch w
+        {
+        case 0, 1:  // left/right walls: slit in Z
+            if math.abs(cz - r.center_z) < slit_half do return true
+        case 2, 3:  // back/front walls: slit in X
+            if math.abs(cx - r.center_x) < slit_half do return true
+        }
+    }
+
+    if gap_hole_w > 0.001 && gap_hole_h > 0.001
+    {
+        y_lo := r.floor_y + gap_hole_b + gap_hole_offset_y
+        y_hi := y_lo + gap_hole_h
+        if cy >= y_lo && cy <= y_hi
+        {
+            hole_half := gap_hole_w * 0.5
+            switch w
+            {
+            case 0, 1:  // left/right: hole in Z, offset in Z
+                if math.abs(cz - (r.center_z + gap_hole_offset)) < hole_half do return true
+            case 2, 3:  // back/front: hole in X, offset in X
+                if math.abs(cx - (r.center_x + gap_hole_offset)) < hole_half do return true
+            }
+        }
+    }
+    return false
+}
+
 // Step 1: For each voxel, check overlap with all rooms' walls and floors. wall_id = room_idx*6 + surface_type.
+// Skips voxels in gap_bottom (horizontal) or gap_slit (vertical) regions.
 voxelize_room :: proc(tree: ^VoxelAABBTree, level: ^LevelData)
 {
     wt := level.wall_thickness
@@ -245,6 +304,23 @@ voxelize_room :: proc(tree: ^VoxelAABBTree, level: ^LevelData)
                     {
                         if aabb_overlap(vbox, walls[w])
                         {
+                            gap_bottom, gap_slit: f32 = 0, 0
+                            gap_hole_w, gap_hole_h, gap_hole_b, gap_hole_offset, gap_hole_offset_y: f32 = 0, 0, 0, 0, 0
+                            for wall in room_def.walls
+                            {
+                                if wall.type == wall_type_for_index(int(w))
+                                {
+                                    gap_bottom = wall.gap_bottom
+                                    gap_slit = wall.gap_slit
+                                    gap_hole_w = wall.gap_hole_width
+                                    gap_hole_h = wall.gap_hole_height
+                                    gap_hole_b = wall.gap_hole_bottom
+                                    gap_hole_offset = wall.gap_hole_offset
+                                    gap_hole_offset_y = wall.gap_hole_offset_y
+                                    break
+                                }
+                            }
+                            if voxel_in_wall_gap(vbox, r, int(w), gap_bottom, gap_slit, gap_hole_w, gap_hole_h, gap_hole_b, gap_hole_offset, gap_hole_offset_y) do continue
                             overlap_count += 1
                             if first_surf < 0 do first_surf = base + i32(w)
                         }
@@ -475,6 +551,94 @@ sphere_intersects_aabb :: proc(center: [3]f32, radius: f32, box: AABB) -> bool
     return (dx*dx + dy*dy + dz*dz) < radius * radius
 }
 
+// Ellipsoid vs AABB via transform space: scale to unit sphere, test, unscale push.
+// radii: (rx, ry, rz) - use min 0.05 to avoid div by zero.
+ellipsoid_vs_aabb :: proc(center: [3]f32, radii: [3]f32, box: AABB) -> (hit: bool, push: [3]f32)
+{
+    rx := math.max(radii[0], 0.05)
+    ry := math.max(radii[1], 0.05)
+    rz := math.max(radii[2], 0.05)
+
+    // Transform to ellipsoid space (ellipsoid becomes unit sphere)
+    c_scaled := [3]f32{ center[0] / rx, center[1] / ry, center[2] / rz }
+    box_scaled := AABB{
+        min = { box.min[0] / rx, box.min[1] / ry, box.min[2] / rz },
+        max = { box.max[0] / rx, box.max[1] / ry, box.max[2] / rz },
+    }
+
+    ok, p := sphere_vs_aabb(c_scaled, 1.0, box_scaled)
+    if !ok do return false, [3]f32{}
+
+    // Unscale push to world space (push was in ellipsoid space)
+    return true, [3]f32{ p[0] * rx, p[1] * ry, p[2] * rz }
+}
+
+ellipsoid_intersects_aabb :: proc(center: [3]f32, radii: [3]f32, box: AABB) -> bool
+{
+    rx := math.max(radii[0], 0.05)
+    ry := math.max(radii[1], 0.05)
+    rz := math.max(radii[2], 0.05)
+
+    c_scaled := [3]f32{ center[0] / rx, center[1] / ry, center[2] / rz }
+    box_scaled := AABB{
+        min = { box.min[0] / rx, box.min[1] / ry, box.min[2] / rz },
+        max = { box.max[0] / rx, box.max[1] / ry, box.max[2] / rz },
+    }
+    return sphere_intersects_aabb(c_scaled, 1.0, box_scaled)
+}
+
+// Ellipsoid vs tree: same as sphere_vs_tree but with radii (rx, ry, rz).
+ellipsoid_vs_tree :: proc(
+    tree: ^VoxelAABBTree,
+    root: i32,
+    center: [3]f32,
+    radii: [3]f32,
+    player_color: i32,
+    surface_colors: [18]i32,
+) -> (push: [3]f32)
+{
+    if root < 0 do return [3]f32{}
+    if root >= i32(len(tree.nodes)) do return [3]f32{}
+
+    node := tree.nodes[root]
+    if !ellipsoid_intersects_aabb(center, radii, node.box) do return [3]f32{}
+
+    if node.left < 0 && node.right < 0
+    {
+        wid := node.wall_id
+        if wid >= 0 && wid < 18
+        {
+            surf_type := wid % SURFACES_PER_ROOM
+            if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return [3]f32{}
+            if surf_type < 4
+            {
+                if player_color == surface_colors[wid] do return [3]f32{}
+            }
+        }
+        hit, p := ellipsoid_vs_aabb(center, radii, node.box)
+        if hit do return p
+        return [3]f32{}
+    }
+
+    total_push := [3]f32{}
+    n := i32(len(tree.nodes))
+    if node.left >= 0 && node.left < n
+    {
+        p := ellipsoid_vs_tree(tree, node.left, center, radii, player_color, surface_colors)
+        total_push[0] += p[0]
+        total_push[1] += p[1]
+        total_push[2] += p[2]
+    }
+    if node.right >= 0 && node.right < n
+    {
+        p := ellipsoid_vs_tree(tree, node.right, center, radii, player_color, surface_colors)
+        total_push[0] += p[0]
+        total_push[1] += p[1]
+        total_push[2] += p[2]
+    }
+    return total_push
+}
+
 // Traverse BVH: at leaves, test sphere vs AABB. wall_id = room*6 + surface_type.
 // Floor outer (type 5): never merge. Floor inner (type 4): match color (same as walls). Walls (0-3): match color.
 sphere_vs_tree :: proc(
@@ -483,7 +647,7 @@ sphere_vs_tree :: proc(
     center: [3]f32,
     radius: f32,
     player_color: i32,
-    surface_colors: [12]i32,
+    surface_colors: [18]i32,
 ) -> (push: [3]f32)
 {
     if root < 0 do return [3]f32{}
@@ -495,7 +659,7 @@ sphere_vs_tree :: proc(
     if node.left < 0 && node.right < 0
     {
         wid := node.wall_id
-        if wid >= 0 && wid < 12
+        if wid >= 0 && wid < 18
         {
             surf_type := wid % SURFACES_PER_ROOM
             // Hybrid: skip floor voxels - floor handled by collide_floor_planes (SDF-precise)
@@ -535,7 +699,7 @@ projectile_in_yellow_wall :: proc(
     root: i32,
     center: [3]f32,
     radius: f32,
-    surface_colors: [12]i32,
+    surface_colors: [18]i32,
 ) -> bool
 {
     if root < 0 do return false
@@ -547,7 +711,7 @@ projectile_in_yellow_wall :: proc(
     if node.left < 0 && node.right < 0
     {
         wid := node.wall_id
-        if wid >= 0 && wid < 12
+        if wid >= 0 && wid < 18
         {
             surf_type := wid % SURFACES_PER_ROOM
             if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return false
@@ -575,7 +739,7 @@ projectile_hits_wall :: proc(
     center: [3]f32,
     radius: f32,
     projectile_color: i32,
-    surface_colors: [12]i32,
+    surface_colors: [18]i32,
 ) -> (hit: bool, push: [3]f32)
 {
     if root < 0 do return false, [3]f32{}
@@ -587,7 +751,7 @@ projectile_hits_wall :: proc(
     if node.left < 0 && node.right < 0
     {
         wid := node.wall_id
-        if wid >= 0 && wid < 12
+        if wid >= 0 && wid < 18
         {
             surf_type := wid % SURFACES_PER_ROOM
             if surf_type == FLOOR_OUTER || surf_type == FLOOR_INNER do return false, [3]f32{}
@@ -616,13 +780,34 @@ resolve_collision :: proc(
     pos: ^[3]f32,
     radius: f32,
     player_color: i32,
-    surface_colors: [12]i32,
+    surface_colors: [18]i32,
     max_iter: int,
 )
 {
     for _ in 0 ..< max_iter
     {
         push := sphere_vs_tree(tree, root, pos^, radius, player_color, surface_colors)
+        if push[0] == 0 && push[1] == 0 && push[2] == 0 do break
+        pos[0] += push[0]
+        pos[1] += push[1]
+        pos[2] += push[2]
+    }
+}
+
+// Ellipsoid version: use when player is squashed (red duck). radii = (rx, ry, rz).
+resolve_collision_ellipsoid :: proc(
+    tree: ^VoxelAABBTree,
+    root: i32,
+    pos: ^[3]f32,
+    radii: [3]f32,
+    player_color: i32,
+    surface_colors: [18]i32,
+    max_iter: int,
+)
+{
+    for _ in 0 ..< max_iter
+    {
+        push := ellipsoid_vs_tree(tree, root, pos^, radii, player_color, surface_colors)
         if push[0] == 0 && push[1] == 0 && push[2] == 0 do break
         pos[0] += push[0]
         pos[1] += push[1]
@@ -637,7 +822,8 @@ collide_floor_planes :: proc(
     pos: ^[3]f32,
     radius: f32,
     player_color: i32,
-    surface_colors: [12]i32,
+    surface_colors: [18]i32,
+    vel_y: f32 = 0,  // if > 0 (jumping), skip push-down to avoid canceling jump
 )
 {
     dead_zone: f32 = 0.002
@@ -674,7 +860,11 @@ collide_floor_planes :: proc(
         penetration := target_y - pos[1]
         if penetration > dead_zone
         {
-            pos[1] += penetration
+            pos[1] += penetration  // push up when below floor
+        }
+        else if penetration < -dead_zone && vel_y <= 0 && -penetration < 0.08
+        {
+            pos[1] = target_y  // push down only when slightly floating (squash transition), not when jumping/falling
         }
     }
 }

@@ -10,7 +10,7 @@ layout(set = 3, binding = 0, std140) uniform SceneBlock
 {
     vec4 u_screen;     // x: width, y: height, z: time, w: unused
     vec4 u_ball;       // player: xyz position, w radius
-    vec4 u_box;        // x: player_color (0=Red, 1=Blue, 2=Green, 3=Yellow)
+    vec4 u_box;        // x: player_color, y: squash_horizontal (pancake), z: squash_vertical (pill)
     vec4 u_cam_pos;    // camera position (xyz)
     vec4 u_cam_forward;// forward basis vector
     vec4 u_cam_right;  // right basis vector
@@ -24,11 +24,15 @@ layout(set = 3, binding = 1, std140) uniform RoomBlock
 {
     vec4 u_room;        // x: half_x, y: half_z, z: height, w: floor_y (room 0)
     vec4 u_room2;       // x: center_x, y: center_z, z: half_x, w: half_z (room 1)
+    vec4 u_room3;       // x: center_x, y: center_z, z: half_x, w: half_z (room 2, Hole Practice)
+    vec4 u_room3_extras;// x: floor_color_r2
     vec4 u_extras;      // x: wall_thickness, y: floor_color_r0, z: floor_color_r1, w: use_wall_hue
     vec4 u_wall_colors;  // room 0: left, right, back, front
     vec4 u_wall_colors2; // room 1: left, right, back, front
+    vec4 u_wall_colors3; // room 2: left, right, back, front
     vec4 u_light_on;   // room 0: left, right, back, front (0 or 1)
     vec4 u_light_on2;  // room 1: left, right, back, front
+    vec4 u_light_on3;  // room 2: always 1
     vec4 u_lighting;   // x: ambient, y: point_brightness, z: point_attenuation, w: switch_visual_radius
     vec4 u_moon_dir;   // xyz: direction (normalized)
     vec4 u_moon;       // rgb: color, w: intensity
@@ -38,6 +42,27 @@ layout(set = 3, binding = 1, std140) uniform RoomBlock
     vec4 u_switch_off_3;  // x=off4.x, y=off5.x, z=off6.x, w=off7.x
     vec4 u_switch_off_4;  // x=off4.y, y=off5.y, z=off6.y, w=off7.y
     vec4 u_switch_off_5;  // x=off4.z, y=off5.z, z=off6.z, w=off7.z
+    vec4 u_room_gaps_0;   // room 0: left_bottom, left_slit, right_bottom, right_slit
+    vec4 u_room_gaps_0b;  // room 0: back_bottom, back_slit, front_bottom, front_slit
+    vec4 u_room_gaps_1;   // room 1: left_bottom, left_slit, right_bottom, right_slit
+    vec4 u_room_gaps_1b;  // room 1: back_bottom, back_slit, front_bottom, front_slit
+    vec4 u_room_gaps_2;   // room 2: left_bottom, left_slit, right_bottom, right_slit
+    vec4 u_room_gaps_2b;  // room 2: back_bottom, back_slit, front_bottom, front_slit
+    vec4 u_room_gaps_0_hole;   // room 0: left_w, left_h, left_b, right_w
+    vec4 u_room_gaps_0_hole2;  // room 0: right_h, right_b, back_w, back_h
+    vec4 u_room_gaps_0_hole3;  // room 0: back_b, front_w, front_h, front_b
+    vec4 u_room_gaps_1_hole;   // room 1: same
+    vec4 u_room_gaps_1_hole2;
+    vec4 u_room_gaps_1_hole3;
+    vec4 u_room_gaps_2_hole;   // room 2: same
+    vec4 u_room_gaps_2_hole2;
+    vec4 u_room_gaps_2_hole3;
+    vec4 u_room_gaps_0_hole_off;    // room 0: left, right, back, front hole offset (horizontal)
+    vec4 u_room_gaps_0_hole_off_y;  // room 0: hole offset Y (vertical)
+    vec4 u_room_gaps_1_hole_off;
+    vec4 u_room_gaps_1_hole_off_y;
+    vec4 u_room_gaps_2_hole_off;
+    vec4 u_room_gaps_2_hole_off_y;
 } room;
 
 // --- SDF Primitives ---
@@ -48,6 +73,16 @@ layout(set = 3, binding = 1, std140) uniform RoomBlock
 float sdSphere(vec3 p, float r)
 { 
     return length(p) - r; 
+}
+
+// Ellipsoid SDF: r = (rx, ry, rz) radii per axis
+float sdEllipsoid(vec3 p, vec3 r)
+{
+    vec3 k0 = p / r;
+    vec3 k1 = p / (r * r);
+    float k2 = length(k0);
+    float k3 = length(k1);
+    return k2 * (k2 - 1.0) / k3;
 }
 
 float sdBox(vec3 p, vec3 b)
@@ -76,16 +111,72 @@ vec3 wallColorFromId(float c)
     return vec3(0.95, 0.85, 0.2);
 }
 
-// SDF for one room at origin with given params
-float sdRoomLocal(vec3 p, float halfX, float halfZ, float height, float floorY, float wallThickness)
+// SDF for one wall with optional gaps. gapBottom: gap at floor. gapSlit: vertical slit. holeW/H/B: jump-through hole.
+// holeOffset: offset along wall (left/right: Z; back/front: X). holeOffsetY: vertical offset (up +, down -).
+// slitAxis: 0=X (back/front), 2=Z (left/right).
+float sdWallWithGaps(vec3 p, vec3 center, vec3 halfSize, float gapBottom, float gapSlit, float floorY, int slitAxis, float holeW, float holeH, float holeB, float holeOffset, float holeOffsetY)
+{
+    vec3 h = halfSize;
+    vec3 c = center;
+
+    if (gapBottom > 0.001) {
+        float remainH = halfSize.y - gapBottom * 0.5;
+        if (remainH < 0.01) return 1000.0;
+        h.y = remainH;
+        c.y = floorY + gapBottom + remainH;
+    }
+
+    float wallSdf;
+    if (gapSlit < 0.001) {
+        wallSdf = sdBox(p - c, h);
+    } else {
+        // Vertical slit: two wall segments
+        float ext = (slitAxis == 0) ? halfSize.x : halfSize.z;
+        float segHalf = (ext - gapSlit * 0.5) * 0.5;
+        if (segHalf < 0.01) return 1000.0;
+        float segOffset = ext * 0.5 + gapSlit * 0.25;
+        vec3 halfSeg = h;
+        if (slitAxis == 0) halfSeg.x = segHalf;
+        else halfSeg.z = segHalf;
+        vec3 c1 = c, c2 = c;
+        if (slitAxis == 0) { c1.x -= segOffset; c2.x += segOffset; }
+        else { c1.z -= segOffset; c2.z += segOffset; }
+        wallSdf = min(sdBox(p - c1, halfSeg), sdBox(p - c2, halfSeg));
+    }
+
+    // Carve out jump-through hole (max = subtract). holeW = horizontal extent along wall, holeH = vertical.
+    // slitAxis 0: back/front walls (extend in X) -> holeOffset in X. slitAxis 2: left/right -> holeOffset in Z.
+    // holeOffsetY: moves hole up (+) or down (-) from base position.
+    if (holeW > 0.001 && holeH > 0.001) {
+        float holeY = floorY + holeB + holeH * 0.5 + holeOffsetY;
+        vec3 holeCenter = c;
+        holeCenter.y = holeY;
+        if (slitAxis == 0) holeCenter.x += holeOffset;
+        else holeCenter.z += holeOffset;
+        vec3 holeHalf;
+        if (slitAxis == 0) {
+            holeHalf = vec3(halfSize.x + 0.01, holeH * 0.5, holeW * 0.5);  // depth, height, width
+        } else {
+            holeHalf = vec3(halfSize.x + 0.01, holeH * 0.5, holeW * 0.5);  // depth, height, width (was bug: hole spanned full wall)
+        }
+        float holeSdf = sdBox(p - holeCenter, holeHalf);
+        wallSdf = max(wallSdf, -holeSdf);
+    }
+    return wallSdf;
+}
+
+// SDF for one room. gaps/gapsB: bottom+slit. hole/hole2/hole3: (left_w,h,b, right_w), (right_h,b, back_w,h), (back_b, front_w,h,b). holeOff/holeOffY: (left, right, back, front).
+float sdRoomLocal(vec3 p, float halfX, float halfZ, float height, float floorY, float wallThickness, vec4 gaps, vec4 gapsB, vec4 hole, vec4 hole2, vec4 hole3, vec4 holeOff, vec4 holeOffY)
 {
     float floorDist = p.y - floorY;
     float wallCenterY = floorY + height * 0.5;
     float ht = wallThickness * 0.5;
-    float leftWall  = sdBox(p - vec3(-halfX - ht, wallCenterY, 0.0), vec3(ht, height * 0.5, halfZ));
-    float rightWall = sdBox(p - vec3(halfX + ht, wallCenterY, 0.0), vec3(ht, height * 0.5, halfZ));
-    float backWall  = sdBox(p - vec3(0.0, wallCenterY, -halfZ - ht), vec3(halfX, height * 0.5, ht));
-    float frontWall = sdBox(p - vec3(0.0, wallCenterY, halfZ + ht), vec3(halfX, height * 0.5, ht));
+
+    float leftWall  = sdWallWithGaps(p, vec3(-halfX - ht, wallCenterY, 0.0), vec3(ht, height * 0.5, halfZ), gaps.x, gaps.y, floorY, 2, hole.x, hole.y, hole.z, holeOff.x, holeOffY.x);
+    float rightWall = sdWallWithGaps(p, vec3(halfX + ht, wallCenterY, 0.0), vec3(ht, height * 0.5, halfZ), gaps.z, gaps.w, floorY, 2, hole.w, hole2.x, hole2.y, holeOff.y, holeOffY.y);
+    float backWall  = sdWallWithGaps(p, vec3(0.0, wallCenterY, -halfZ - ht), vec3(halfX, height * 0.5, ht), gapsB.x, gapsB.y, floorY, 0, hole2.z, hole2.w, hole3.x, holeOff.z, holeOffY.z);
+    float frontWall = sdWallWithGaps(p, vec3(0.0, wallCenterY, halfZ + ht), vec3(halfX, height * 0.5, ht), gapsB.z, gapsB.w, floorY, 0, hole3.y, hole3.z, hole3.w, holeOff.w, holeOffY.w);
+
     float walls = min(min(leftWall, rightWall), min(frontWall, backWall));
     return min(floorDist, walls);
 }
@@ -97,17 +188,55 @@ float map(vec3 p)
     float wallThickness = room.u_extras.x;
     float wallCenterY = floorY + roomHeight * 0.5;
 
-    float d0 = sdRoomLocal(p, roomHalfX, roomHalfZ, roomHeight, floorY, wallThickness);
+    vec4 gaps0 = room.u_room_gaps_0;
+    vec4 gaps0b = room.u_room_gaps_0b;
+    vec4 gaps1 = room.u_room_gaps_1;
+    vec4 gaps1b = room.u_room_gaps_1b;
+    vec4 hole0 = room.u_room_gaps_0_hole;
+    vec4 hole0b = room.u_room_gaps_0_hole2;
+    vec4 hole0c = room.u_room_gaps_0_hole3;
+    vec4 holeOff0 = room.u_room_gaps_0_hole_off;
+    vec4 holeOff0y = room.u_room_gaps_0_hole_off_y;
+    vec4 hole1 = room.u_room_gaps_1_hole;
+    vec4 hole1b = room.u_room_gaps_1_hole2;
+    vec4 hole1c = room.u_room_gaps_1_hole3;
+    vec4 holeOff1 = room.u_room_gaps_1_hole_off;
+    vec4 holeOff1y = room.u_room_gaps_1_hole_off_y;
+    float d0 = sdRoomLocal(p, roomHalfX, roomHalfZ, roomHeight, floorY, wallThickness, gaps0, gaps0b, hole0, hole0b, hole0c, holeOff0, holeOff0y);
 
     vec3 p1 = p - vec3(room.u_room2.x, 0.0, room.u_room2.y);
-    float d1 = sdRoomLocal(p1, room.u_room2.z, room.u_room2.w, roomHeight, floorY, wallThickness);
+    float d1 = sdRoomLocal(p1, room.u_room2.z, room.u_room2.w, roomHeight, floorY, wallThickness, gaps1, gaps1b, hole1, hole1b, hole1c, holeOff1, holeOff1y);
 
     float roomShell = min(d0, d1);
+    if (room.u_room3.z > 0.001) {
+        vec4 gaps2 = room.u_room_gaps_2;
+        vec4 gaps2b = room.u_room_gaps_2b;
+        vec4 hole2 = room.u_room_gaps_2_hole;
+        vec4 hole2b = room.u_room_gaps_2_hole2;
+        vec4 hole2c = room.u_room_gaps_2_hole3;
+        vec4 holeOff2 = room.u_room_gaps_2_hole_off;
+        vec4 holeOff2y = room.u_room_gaps_2_hole_off_y;
+        vec3 p2 = p - vec3(room.u_room3.x, 0.0, room.u_room3.y);
+        float d2 = sdRoomLocal(p2, room.u_room3.z, room.u_room3.w, roomHeight, floorY, wallThickness, gaps2, gaps2b, hole2, hole2b, hole2c, holeOff2, holeOff2y);
+        roomShell = min(roomShell, d2);
+    }
 
     vec3 playerPos = p - ubo.u_ball.xyz;
-    float playerSphere = sdSphere(playerPos, ubo.u_ball.w);
+    float baseR = ubo.u_ball.w;
+    float squashH = ubo.u_box.y;
+    float squashV = ubo.u_box.z;
+    // Horizontal: compress Y to 25% (pancake). Vertical: compress XZ to 50% (billboard pill)
+    vec3 r = vec3(
+        baseR * (1.0 - squashV * 0.5),
+        baseR * (1.0 - squashH * 0.75),
+        baseR * (1.0 - squashV * 0.5)
+    );
+    r = max(r, vec3(0.1, 0.05, 0.1));
+    float playerShape = (squashH > 0.001 || squashV > 0.001)
+        ? sdEllipsoid(playerPos, r)
+        : sdSphere(playerPos, baseR);
 
-    float d = min(roomShell, playerSphere);
+    float d = min(roomShell, playerShape);
     if (ubo.u_projectile.w > 0.0) {
         d = min(d, sdSphere(p - ubo.u_projectile.xyz, ubo.u_projectile.w));
     }
@@ -154,7 +283,28 @@ float getHitMaterial(vec3 p)
     float rightWall1 = sdBox(p1 - vec3(hx1 + ht, wallCenterY, 0.0), vec3(ht, roomHeight * 0.5, hz1));
     float backWall1  = sdBox(p1 - vec3(0.0, wallCenterY, -hz1 - ht), vec3(hx1, roomHeight * 0.5, ht));
     float frontWall1 = sdBox(p1 - vec3(0.0, wallCenterY, hz1 + ht), vec3(hx1, roomHeight * 0.5, ht));
-    float playerSphere = sdSphere(p - ubo.u_ball.xyz, ubo.u_ball.w);
+    float leftWall2 = 1000.0, rightWall2 = 1000.0, backWall2 = 1000.0, frontWall2 = 1000.0;
+    if (room.u_room3.z > 0.001) {
+        vec3 p2 = p - vec3(room.u_room3.x, 0.0, room.u_room3.y);
+        float hx2 = room.u_room3.z, hz2 = room.u_room3.w;
+        leftWall2  = sdBox(p2 - vec3(-hx2 - ht, wallCenterY, 0.0), vec3(ht, roomHeight * 0.5, hz2));
+        rightWall2 = sdBox(p2 - vec3(hx2 + ht, wallCenterY, 0.0), vec3(ht, roomHeight * 0.5, hz2));
+        backWall2  = sdBox(p2 - vec3(0.0, wallCenterY, -hz2 - ht), vec3(hx2, roomHeight * 0.5, ht));
+        frontWall2 = sdBox(p2 - vec3(0.0, wallCenterY, hz2 + ht), vec3(hx2, roomHeight * 0.5, ht));
+    }
+    float baseR = ubo.u_ball.w;
+    float squashH = ubo.u_box.y;
+    float squashV = ubo.u_box.z;
+    // Horizontal: compress Y to 25% (pancake). Vertical: compress XZ to 50% (billboard pill)
+    vec3 r = vec3(
+        baseR * (1.0 - squashV * 0.5),
+        baseR * (1.0 - squashH * 0.75),
+        baseR * (1.0 - squashV * 0.5)
+    );
+    r = max(r, vec3(0.1, 0.05, 0.1));
+    float playerShape = (squashH > 0.001 || squashV > 0.001)
+        ? sdEllipsoid(p - ubo.u_ball.xyz, r)
+        : sdSphere(p - ubo.u_ball.xyz, baseR);
 
     // Switch spheres (check before walls - they're on the surface)
     vec3 switchPos[8];
@@ -180,10 +330,12 @@ float getHitMaterial(vec3 p)
             if (abs(sdSphere(p - ubo.u_projectiles[i].xyz, ubo.u_projectiles[i].w)) < eps) return 11.0;
         }
     }
-    if (abs(playerSphere) < eps) return 10.0;
+    if (abs(playerShape) < eps) return 10.0;
     if (abs(floorDist) < eps) {
         bool inR0 = abs(p.x) < roomHalfX && abs(p.z) < roomHalfZ;
         bool inR1 = abs(p.x - room.u_room2.x) < hx1 && abs(p.z - room.u_room2.y) < hz1;
+        bool inR2 = room.u_room3.z > 0.001 && abs(p.x - room.u_room3.x) < room.u_room3.z && abs(p.z - room.u_room3.y) < room.u_room3.w;
+        if (inR2) return 13.0;  // floor room 2
         if (inR1) return 5.0;
         return 0.0;
     }
@@ -195,6 +347,10 @@ float getHitMaterial(vec3 p)
     if (abs(rightWall1) < eps) return 7.0;
     if (abs(backWall1) < eps) return 8.0;
     if (abs(frontWall1) < eps) return 9.0;
+    if (abs(leftWall2) < eps) return 14.0;
+    if (abs(rightWall2) < eps) return 15.0;
+    if (abs(backWall2) < eps) return 16.0;
+    if (abs(frontWall2) < eps) return 17.0;
     return 0.0;  // default
 }
 
@@ -244,7 +400,7 @@ void main()
         float ht = wallThickness * 0.5;
         float wallCenterY = floorY + roomHeight * 0.5;
         
-        vec3 lightPos[8];
+        vec3 lightPos[12];
         lightPos[0] = vec3(-roomHalfX - ht, wallCenterY, 0.0);           // r0 left
         lightPos[1] = vec3(roomHalfX + ht, wallCenterY, 0.0);          // r0 right
         lightPos[2] = vec3(0.0, wallCenterY, -roomHalfZ - ht);         // r0 back
@@ -254,6 +410,11 @@ void main()
         lightPos[5] = vec3(cx + hx1 + ht, wallCenterY, cz);             // r1 right
         lightPos[6] = vec3(cx, wallCenterY, cz - hz1 - ht);             // r1 back
         lightPos[7] = vec3(cx, wallCenterY, cz + hz1 + ht);             // r1 front
+        float cx2 = room.u_room3.x, cz2 = room.u_room3.y, hx2 = room.u_room3.z, hz2 = room.u_room3.w;
+        lightPos[8] = vec3(cx2 - hx2 - ht, wallCenterY, cz2);             // r2 left
+        lightPos[9] = vec3(cx2 + hx2 + ht, wallCenterY, cz2);             // r2 right
+        lightPos[10] = vec3(cx2, wallCenterY, cz2 - hz2 - ht);             // r2 back
+        lightPos[11] = vec3(cx2, wallCenterY, cz2 + hz2 + ht);             // r2 front
         
         float ambient = room.u_lighting.x;
         if (ambient < 0.001) ambient = 0.02;
@@ -271,14 +432,16 @@ void main()
         
         // Accumulate lighting as vec3 for colored point lights (wall hue)
         vec3 lightAccum = vec3(ambient) + moonDiff * moonColor;
-        for (int i = 0; i < 8; i++) {
-            float on = (i < 4) ? room.u_light_on[i] : room.u_light_on2[i - 4];
+        for (int i = 0; i < 12; i++) {
+            if (i >= 8 && room.u_room3.z < 0.001) continue;  // skip room 2 lights when disabled
+            float on = (i < 4) ? room.u_light_on[i] : (i < 8) ? room.u_light_on2[i - 4] : room.u_light_on3[i - 8];
             if (on > 0.5) {
                 vec3 toLight = lightPos[i] - p;
                 float dist = length(toLight);
                 vec3 lightDir = toLight / max(dist, 0.001);
                 float atten = pointBright / (1.0 + pointAtten * dist * dist);
-                vec3 lightTint = useWallHue ? wallColorFromId((i < 4) ? room.u_wall_colors[i] : room.u_wall_colors2[i - 4]) : vec3(1.0);
+                float wc = (i < 4) ? room.u_wall_colors[i] : (i < 8) ? room.u_wall_colors2[i - 4] : room.u_wall_colors3[i - 8];
+                vec3 lightTint = useWallHue ? wallColorFromId(wc) : vec3(1.0);
                 lightAccum += max(dot(n, lightDir), 0.0) * atten * lightTint;
             }
         }
@@ -303,6 +466,12 @@ void main()
             else if (fc < 1.5) baseColor = vec3(0.2, 0.8, 0.3);
             else if (fc < 2.5) baseColor = vec3(0.2, 0.4, 0.9);
             else baseColor = vec3(0.95, 0.85, 0.2);
+        } else if (mat == 13.0) {
+            float fc = room.u_room3_extras.x;  // floor room 2
+            if (fc < 0.5) baseColor = vec3(0.8, 0.2, 0.2);
+            else if (fc < 1.5) baseColor = vec3(0.2, 0.8, 0.3);
+            else if (fc < 2.5) baseColor = vec3(0.2, 0.4, 0.9);
+            else baseColor = vec3(0.95, 0.85, 0.2);
         } else if (mat == 10.0) {
             float pc = ubo.u_box.x;
             if (pc < 0.5) baseColor = vec3(0.9, 0.2, 0.2);      // Red
@@ -318,6 +487,12 @@ void main()
             else baseColor = vec3(0.95, 0.85, 0.2);
         } else if (mat >= 6.0 && mat <= 9.0) {
             float wc = (mat < 6.5) ? room.u_wall_colors2.x : (mat < 7.5) ? room.u_wall_colors2.y : (mat < 8.5) ? room.u_wall_colors2.z : room.u_wall_colors2.w;
+            if (wc < 0.5) baseColor = vec3(0.8, 0.2, 0.2);
+            else if (wc < 1.5) baseColor = vec3(0.2, 0.8, 0.3);
+            else if (wc < 2.5) baseColor = vec3(0.2, 0.4, 0.9);
+            else baseColor = vec3(0.95, 0.85, 0.2);
+        } else if (mat >= 14.0 && mat <= 17.0) {
+            float wc = (mat < 14.5) ? room.u_wall_colors3.x : (mat < 15.5) ? room.u_wall_colors3.y : (mat < 16.5) ? room.u_wall_colors3.z : room.u_wall_colors3.w;
             if (wc < 0.5) baseColor = vec3(0.8, 0.2, 0.2);
             else if (wc < 1.5) baseColor = vec3(0.2, 0.8, 0.3);
             else if (wc < 2.5) baseColor = vec3(0.2, 0.4, 0.9);

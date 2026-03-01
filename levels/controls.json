@@ -1,0 +1,99 @@
+{
+  "_comment_edit_mode": "Toggle edit_mode on to change D-pad to more camera controls (roll, height)",
+  "edit_mode": true,
+  "player": {
+    "color": "yellow",
+    "spawn_x": 0.125,
+    "spawn_z": 0.125,
+    "spawn_height": 2,
+    "move_speed": 10,
+    "move_accel": 25,
+    "move_decel": 18,
+    "rot_speed": 0.9
+  },
+  "jump": {
+    "key": "SPACE",
+    "button": "SOUTH",
+    "axis": "LEFT_TRIGGER"
+  },
+  "fire": {
+    "key": "F",
+    "button": "EAST",
+    "axis": "RIGHT_TRIGGER"
+  },
+  "duck_horizontal": {
+    "key": "LSHIFT",
+    "button": "LEFT_SHOULDER",
+    "axis": ""
+  },
+  "duck_vertical": {
+    "key": "V",
+    "button": "RIGHT_SHOULDER",
+    "axis": ""
+  },
+  "gravel_hook": {
+    "key": "H",
+    "button": "RIGHT_SHOULDER",
+    "axis": ""
+  },
+  "player_red": {
+    "horizontal": {
+      "key": "LSHIFT",
+      "button": "LEFT_SHOULDER",
+      "axis": ""
+    },
+    "vertical": {
+      "key": "V",
+      "button": "RIGHT_SHOULDER",
+      "axis": ""
+    },
+    "squash_exclusive": false
+  },
+  "pause": {
+    "key": "P",
+    "button": "NORTH",
+    "axis": ""
+  },
+  "move_forward": {
+    "key": "W",
+    "button": "DPAD_UP",
+    "axis": ""
+  },
+  "move_back": {
+    "key": "S",
+    "button": "DPAD_DOWN",
+    "axis": ""
+  },
+  "move_left": {
+    "key": "A",
+    "button": "DPAD_LEFT",
+    "axis": ""
+  },
+  "move_right": {
+    "key": "D",
+    "button": "DPAD_RIGHT",
+    "axis": ""
+  },
+  "move_stick": "LEFT",
+  "cam_yaw_left": {
+    "key": "LEFT",
+    "button": "",
+    "axis": ""
+  },
+  "cam_yaw_right": {
+    "key": "RIGHT",
+    "button": "",
+    "axis": ""
+  },
+  "cam_pitch_up": {
+    "key": "UP",
+    "button": "",
+    "axis": ""
+  },
+  "cam_pitch_down": {
+    "key": "DOWN",
+    "button": "",
+    "axis": ""
+  },
+  "cam_stick": "RIGHT"
+}
