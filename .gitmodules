@@ -1,0 +1,3 @@
+[submodule "lib/joltc-odin"]
+	path = lib/joltc-odin
+	url = https://github.com/jrdurandt/joltc-odin.git
