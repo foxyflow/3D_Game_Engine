@@ -9,4 +9,4 @@ if %ERRORLEVEL% neq 0 (echo Vertex shader failed & exit /b 1)
 E:\VulkanSDK\1.4.341.1\Bin\glslangValidator.exe --target-env vulkan1.1 -V shaders/sdf_test.frag -o shaders/sdf_test.frag.spv
 if %ERRORLEVEL% neq 0 (echo Fragment shader failed & exit /b 1)
 
-odin build src -debug -out:3D_Game_Engine.exe
+odin build src -debug -out:3D_Game_Engine.exe -collection:lib=./lib

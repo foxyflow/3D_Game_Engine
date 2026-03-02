@@ -36,24 +36,29 @@ odin run jolt_test -collection:lib=./lib
 
 Expected output: `Initializing Jolt Physics...` then `Jolt Init OK.`
 
+## Integration Status
+
+Jolt is integrated into the main game (`src/main.odin`):
+
+- **Init**: `jolt_init(&level)` after level load
+- **Static world**: Floor + walls from procedural rooms (see `src/jolt_physics.odin`)
+- **User data**: Body user data stores surface color for future merge-through
+- **Player collision**: Still uses voxel AABB tree (Jolt world ready for dynamic bodies, mesh loading)
+
 ## Using Jolt in Your Code
 
-Add to your build:
+Build with:
 
 ```
 -collection:lib=./lib
 ```
 
-Import in Odin:
+Import (in package main):
 
 ```odin
+// jolt_physics.odin provides jolt_init, jolt_shutdown, jolt_physics
+// For direct Jolt API:
 import joltc "lib:joltc-odin"
-
-main :: proc() {
-    assert(joltc.Init())
-    defer joltc.Shutdown()
-    // ... use Jolt ...
-}
 ```
 
 ## File Locations

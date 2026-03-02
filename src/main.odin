@@ -829,6 +829,10 @@ main :: proc()
     floor_y: f32 = -1.0
     if len(level.rooms) > 0 do floor_y = level.rooms[0].room.floor_y
 
+    // --- Jolt Physics (static world from rooms; player collision still uses voxel) ---
+    jolt_ok := jolt_init(&level)
+    defer if jolt_ok do jolt_shutdown()
+
     // --- Player Init (from controls.json player section, or defaults) ---
     player_color := color_string_to_id(ctrl.player.color != "" ? ctrl.player.color : "red")
     collision_radius: f32 = 0.3
