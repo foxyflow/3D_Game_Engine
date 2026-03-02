@@ -1,0 +1,73 @@
+{
+  "wall_thickness": 0.5,
+  "voxel_size": 0.25,
+  "lighting": {
+    "ambient": 0.02,
+    "moon": {
+      "direction": [1, 3, -2],
+      "color": [0.5, 0.55, 0.8],
+      "intensity": 0.6
+    },
+    "point_brightness": 2,
+    "point_attenuation": 0.3,
+    "use_wall_hue": true,
+    "switch_radius": 0.25,
+    "switch_visual_radius": 0.15,
+    "switches": [
+      {"label": "Main Room - Left", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Main Room - Right", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Main Room - Back", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Main Room - Front", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Squash Test - Left", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Squash Test - Right", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Squash Test - Back", "start_on": true, "offset_x": 0, "offset_y": 0, "offset_z": 0},
+      {"label": "Squash Test - Front", "start_on": false, "offset_x": 0, "offset_y": 0, "offset_z": 0}
+    ]
+  },
+  "rooms": [
+    {
+      "label": "Main Room",
+      "room": {"center_x": 0, "center_z": 0, "half_x": 4, "half_z": 6, "height": 3, "floor_y": -1},
+      "floor": {"color": "blue"},
+      "walls": [
+        {"type": "left", "color": "yellow", "gap_bottom": 0.5, "gap_slit": 0, "gap_hole_width": 0.5, "gap_hole_height": 0.6, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "right", "color": "yellow", "gap_bottom": 0, "gap_slit": 0.5, "gap_hole_width": 0.5, "gap_hole_height": 0.7, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "back", "color": "green", "gap_bottom": 0.6, "gap_slit": 0, "gap_hole_width": 0.6, "gap_hole_height": 0.8, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "front", "color": "blue", "gap_bottom": 0, "gap_slit": 0.6, "gap_hole_width": 0.5, "gap_hole_height": 0.7, "gap_hole_bottom": 0.6, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
+      ]
+    },
+    {
+      "label": "Squash Test",
+      "room": {"center_x": -6, "center_z": 0, "half_x": 1.5, "half_z": 2, "height": 2.5, "floor_y": -1},
+      "floor": {"color": "blue"},
+      "walls": [
+        {"type": "left", "color": "yellow", "gap_bottom": 0.5, "gap_slit": 0, "gap_hole_width": 0.5, "gap_hole_height": 0.6, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "right", "color": "yellow", "gap_bottom": 0, "gap_slit": 0.5, "gap_hole_width": 0.5, "gap_hole_height": 0.6, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "back", "color": "yellow", "gap_bottom": 0.7, "gap_slit": 0, "gap_hole_width": 0.6, "gap_hole_height": 0.7, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "front", "color": "red", "gap_bottom": 0, "gap_slit": 0.8, "gap_hole_width": 0.5, "gap_hole_height": 0.6, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
+      ]
+    },
+    {
+      "label": "Hole Practice",
+      "room": {"center_x": 10, "center_z": 10, "half_x": 5, "half_z": 6, "height": 4.5, "floor_y": -1},
+      "floor": {"color": "blue"},
+      "walls": [
+        {"type": "left", "color": "yellow", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "right", "color": "blue", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0.5, "gap_hole_height": 0.5, "gap_hole_bottom": 0.5, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "back", "color": "green", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0.6, "gap_hole_height": 0.8, "gap_hole_bottom": 1.3, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
+        {"type": "front", "color": "yellow", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0.3, "gap_hole_height": 0.5, "gap_hole_bottom": 0.8, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
+      ]
+    }
+  ],
+  "standalone_walls": [
+    {
+      "center_x": 0.0,
+      "center_y": 1.0,
+      "center_z": 10.0,
+      "half_x":   2.0,
+      "half_y":   1.5,
+      "half_z":   0.25,
+      "color":    "blue"
+    }
+  ]
+}

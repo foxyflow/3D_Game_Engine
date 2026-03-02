@@ -63,6 +63,8 @@ layout(set = 3, binding = 1, std140) uniform RoomBlock
     vec4 u_room_gaps_1_hole_off_y;
     vec4 u_room_gaps_2_hole_off;
     vec4 u_room_gaps_2_hole_off_y;
+    vec4 u_standalone_wall_center; // xyz center, w=color id
+    vec4 u_standalone_wall_half;   // xyz half extents
 } room;
 
 // --- SDF Primitives ---
@@ -221,6 +223,11 @@ float map(vec3 p)
         roomShell = min(roomShell, d2);
     }
 
+    float standaloneWall = 1000.0;
+    if (room.u_standalone_wall_half.x > 0.0) {
+        standaloneWall = sdBox(p - room.u_standalone_wall_center.xyz, room.u_standalone_wall_half.xyz);
+    }
+
     vec3 playerPos = p - ubo.u_ball.xyz;
     float baseR = ubo.u_ball.w;
     float squashH = ubo.u_box.y;
@@ -236,7 +243,8 @@ float map(vec3 p)
         ? sdEllipsoid(playerPos, r)
         : sdSphere(playerPos, baseR);
 
-    float d = min(roomShell, playerShape);
+    float geom = min(roomShell, standaloneWall);
+    float d = min(geom, playerShape);
     if (ubo.u_projectile.w > 0.0) {
         d = min(d, sdSphere(p - ubo.u_projectile.xyz, ubo.u_projectile.w));
     }
@@ -274,6 +282,10 @@ float getHitMaterial(vec3 p)
     float floorDist = p.y - floorY;
     float eps = 0.01;
     float leftWall0  = sdBox(p - vec3(-roomHalfX - ht, wallCenterY, 0.0), vec3(ht, roomHeight * 0.5, roomHalfZ));
+    float standaloneWall = 1000.0;
+    if (room.u_standalone_wall_half.x > 0.0) {
+        standaloneWall = sdBox(p - room.u_standalone_wall_center.xyz, room.u_standalone_wall_half.xyz);
+    }
     float rightWall0 = sdBox(p - vec3(roomHalfX + ht, wallCenterY, 0.0), vec3(ht, roomHeight * 0.5, roomHalfZ));
     float backWall0  = sdBox(p - vec3(0.0, wallCenterY, -roomHalfZ - ht), vec3(roomHalfX, roomHeight * 0.5, ht));
     float frontWall0 = sdBox(p - vec3(0.0, wallCenterY, roomHalfZ + ht), vec3(roomHalfX, roomHeight * 0.5, ht));
@@ -351,6 +363,7 @@ float getHitMaterial(vec3 p)
     if (abs(rightWall2) < eps) return 15.0;
     if (abs(backWall2) < eps) return 16.0;
     if (abs(frontWall2) < eps) return 17.0;
+    if (abs(standaloneWall) < eps) return 18.0;
     return 0.0;  // default
 }
 
@@ -500,6 +513,12 @@ void main()
         } else if (mat == 11.0) {
             baseColor = vec3(1.0, 0.75, 0.0);  // bright yellow/orange projectile
             lightAccum = vec3(1.0);  // full brightness (emissive glow)
+        } else if (mat == 18.0) {
+            float wc = room.u_standalone_wall_center.w;
+            if (wc < 0.5) baseColor = vec3(0.8, 0.2, 0.2);
+            else if (wc < 1.5) baseColor = vec3(0.2, 0.8, 0.3);
+            else if (wc < 2.5) baseColor = vec3(0.2, 0.4, 0.9);
+            else baseColor = vec3(0.95, 0.85, 0.2);
         } else if (mat == 12.0) {
             baseColor = vec3(0.5, 0.5, 0.55);  // switch: gray/metallic
         }

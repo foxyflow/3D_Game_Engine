@@ -33,11 +33,11 @@
         {"type": "left", "color": "yellow", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
         {"type": "right", "color": "yellow", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
         {"type": "back", "color": "green", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
-        {"type": "front", "color": "blue", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
+        {"type": "front", "color": "red", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
       ]
     },
     {
-      "label": "Side Room",
+      "label": "Room2",
       "room": {"center_x": -8, "center_z": 0, "half_x": 2, "half_z": 3, "height": 3, "floor_y": -1},
       "floor": {"color": "red"},
       "walls": [
@@ -46,6 +46,17 @@
         {"type": "back", "color": "red", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0},
         {"type": "front", "color": "red", "gap_bottom": 0, "gap_slit": 0, "gap_hole_width": 0, "gap_hole_height": 0, "gap_hole_bottom": 0, "gap_hole_offset": 0, "gap_hole_offset_y": 0}
       ]
+    }
+  ],
+  "standalone_walls": [
+    {
+      "center_x": 0.0,
+      "center_y": 0.0,
+      "center_z": 1.0,
+      "half_x":   2.0,
+      "half_y":   1.5,
+      "half_z":   0.25,
+      "color":    "blue"
     }
   ]
 }

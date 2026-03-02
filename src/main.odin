@@ -96,6 +96,22 @@ WallDef :: struct
     gap_hole_offset_y:f32,  // vertical offset: moves hole up (+) or down (-) from gap_hole_bottom
 }
 
+// StandaloneWallDef: arbitrary axis-aligned wall box, independent of rooms.
+// Collision:
+// - Always solid in CPU collision (no merge-through by color).
+// Rendering:
+// - Color is encoded as WALL_COLOR_* id and used by the SDF shader when present.
+StandaloneWallDef :: struct
+{
+    center_x : f32,
+    center_y : f32,
+    center_z : f32,
+    half_x   : f32,
+    half_y   : f32,
+    half_z   : f32,
+    color    : string,
+}
+
 // FloorDef: floor color for merge-through (red fury sinks through when matching).
 FloorDef :: struct
 {
@@ -194,10 +210,11 @@ ControlsDef :: struct
 // edit_mode and player are in controls.json, not level.
 LevelData :: struct
 {
-    wall_thickness: f32,
-    voxel_size:     f32,
-    rooms:          [dynamic]RoomDef,
-    lighting:       LightingDef,
+    wall_thickness   : f32,
+    voxel_size       : f32,
+    rooms            : [dynamic]RoomDef,
+    standalone_walls : [dynamic]StandaloneWallDef,
+    lighting         : LightingDef,
 }
 
 // RoomBlock: separate UBO for room params. Room 0 at origin, room 1+2 at center. Room 3 disabled when room3.z (half_x) == 0.
@@ -244,6 +261,8 @@ RoomBlock :: struct
     room_gaps_1_hole_off_y: [4]f32,
     room_gaps_2_hole_off:   [4]f32,
     room_gaps_2_hole_off_y: [4]f32,
+    standalone_wall_center: [4]f32, // xyz center, w=color id for rendering
+    standalone_wall_half:   [4]f32, // xyz half extents for rendering
 }
 
 // Color IDs for merge-through-walls. String -> ID mapping.
@@ -690,7 +709,7 @@ main :: proc()
     }
     defer sdl.Quit()
 
-    window := sdl.CreateWindow("JoltEnvironmentPhysics init but not yet used. AABB still in place/SDF Player Engine. Use gamepad, Yellowball fires redball squashes", 1280, 720, {})
+    window := sdl.CreateWindow("JoltEnvironmentPhysics ready to use. AABB (tree deleted)/SDF Player Engine. Use gamepad, Yellowball fires redball squashes", 1280, 720, {})
     if window == nil
     {
         fmt.eprintln("Window Failed:", sdl.GetError())
@@ -783,8 +802,8 @@ main :: proc()
     }
     fmt.eprintln("[Engine] Shaders + pipeline OK")
 
-    // --- Level Load ---
-    level, level_ok := load_level("levels/level2.json")
+    // --- Level Load (game world description, used by both rendering and collision) ---
+    level, level_ok := load_level("levels/level2.json") // change to "levels/testing_ground.json" to swap levels
     if !level_ok
     {
         fmt.eprintln("Failed to load level, using defaults")
@@ -814,6 +833,7 @@ main :: proc()
     ctrl, _ := load_controls("levels/controls.json")
     fmt.eprintln("[Engine] Controls loaded from levels/controls.json")
 
+    // --- Collision setup: wall/floor colors and floor height ---
     // Surface colors: room_idx*6 + [left, right, back, front, floor_inner, floor_outer]. Max 3 rooms = 18.
     // -1 = solid (never merge). 0-3 = red/green/blue/yellow.
     surface_colors: [18]i32 = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }
@@ -836,7 +856,7 @@ main :: proc()
     floor_y: f32 = -1.0
     if len(level.rooms) > 0 do floor_y = level.rooms[0].room.floor_y
 
-    // --- Jolt Physics (static world from rooms; player collision still uses voxel) ---
+    // --- Jolt Physics (static world from rooms; player collision still uses AABB helpers) ---
     jolt_ok := jolt_init(&level)
     defer if jolt_ok do jolt_shutdown()
 
@@ -869,17 +889,6 @@ main :: proc()
     light_on: [8]bool
     for i in 0 ..< 8 do light_on[i] = level.lighting.switches[i].start_on
     switch_overlapping: [8]bool = {}  // was projectile overlapping last frame (toggle on enter only)
-
-    // --- Voxel AABB Tree (wall collision; Jolt disabled due to crash) ---
-    tree := init_voxel_tree(&level)
-    defer delete(tree.voxels)
-    defer delete(tree.wall_ids)
-    defer mem.delete_dynamic_array(tree.boxes)
-    defer mem.delete_dynamic_array(tree.nodes)
-    voxelize_room(&tree, &level)
-    collect_boxes(&tree)
-    tree_root := build_tree(&tree, context.allocator)
-    fmt.eprintln("[Engine] Voxel tree built, root:", tree_root)
 
     // --- Camera Init (3rd-person follow) ---
     cam := Camera{
@@ -999,7 +1008,7 @@ main :: proc()
         {
         // Jump: from controls (Space/B/L2)
         space_pressed := action_pressed(ctrl.jump, keys, key_ok, gamepad)
-        on_floor := !matching_floor && player.pos[1] <= rest_y + 0.05
+        on_floor := player.pos[1] <= rest_y + 0.05
         on_stuck: bool = false
         for sp in stuck_projectiles
         {
@@ -1182,88 +1191,59 @@ main :: proc()
                 switch_overlapping[i] = overlapping
             }
 
-            if tree_root >= 0
+            in_yellow := projectile_in_yellow_rooms(&level, projectile.pos, projectile.radius, surface_colors)
+            if in_yellow
             {
-                in_yellow := projectile_in_yellow_wall(&tree, tree_root, projectile.pos, projectile.radius, surface_colors)
-                if in_yellow
+                projectile.vel[0] *= PROJECTILE_YELLOW_SLOWDOWN
+                projectile.vel[1] *= PROJECTILE_YELLOW_SLOWDOWN
+                projectile.vel[2] *= PROJECTILE_YELLOW_SLOWDOWN
+                speed := math.sqrt(projectile.vel[0]*projectile.vel[0] + projectile.vel[1]*projectile.vel[1] + projectile.vel[2]*projectile.vel[2])
+                if speed > 0.001 && speed < PROJECTILE_YELLOW_MIN_SPEED
                 {
-                    projectile.vel[0] *= PROJECTILE_YELLOW_SLOWDOWN
-                    projectile.vel[1] *= PROJECTILE_YELLOW_SLOWDOWN
-                    projectile.vel[2] *= PROJECTILE_YELLOW_SLOWDOWN
-                    speed := math.sqrt(projectile.vel[0]*projectile.vel[0] + projectile.vel[1]*projectile.vel[1] + projectile.vel[2]*projectile.vel[2])
-                    if speed > 0.001 && speed < PROJECTILE_YELLOW_MIN_SPEED
-                    {
-                        scale := PROJECTILE_YELLOW_MIN_SPEED / speed
-                        projectile.vel[0] *= scale
-                        projectile.vel[1] *= scale
-                        projectile.vel[2] *= scale
-                    }
+                    scale := PROJECTILE_YELLOW_MIN_SPEED / speed
+                    projectile.vel[0] *= scale
+                    projectile.vel[1] *= scale
+                    projectile.vel[2] *= scale
                 }
-                else
+            }
+            else
+            {
+                speed := math.sqrt(projectile.vel[0]*projectile.vel[0] + projectile.vel[1]*projectile.vel[1] + projectile.vel[2]*projectile.vel[2])
+                if speed > 0.001 && speed < PROJECTILE_SPEED
                 {
-                    speed := math.sqrt(projectile.vel[0]*projectile.vel[0] + projectile.vel[1]*projectile.vel[1] + projectile.vel[2]*projectile.vel[2])
-                    if speed > 0.001 && speed < PROJECTILE_SPEED
-                    {
-                        scale := PROJECTILE_SPEED / speed
-                        projectile.vel[0] *= scale
-                        projectile.vel[1] *= scale
-                        projectile.vel[2] *= scale
-                    }
+                    scale := PROJECTILE_SPEED / speed
+                    projectile.vel[0] *= scale
+                    projectile.vel[1] *= scale
+                    projectile.vel[2] *= scale
                 }
-                if !in_yellow
+            }
+            if !in_yellow
+            {
+                if hit, push := projectile_hits_wall_rooms(&level, projectile.pos, projectile.radius, WALL_COLOR_YELLOW, surface_colors); hit
                 {
-                    if hit, push := projectile_hits_wall(&tree, tree_root, projectile.pos, projectile.radius, WALL_COLOR_YELLOW, surface_colors); hit
+                    projectile.pos[0] += push[0]
+                    projectile.pos[1] += push[1]
+                    projectile.pos[2] += push[2]
+                    push_len := math.sqrt(push[0]*push[0] + push[1]*push[1] + push[2]*push[2])
+                    if push_len > 0.001
                     {
-                        projectile.pos[0] += push[0]
-                        projectile.pos[1] += push[1]
-                        projectile.pos[2] += push[2]
-                        push_len := math.sqrt(push[0]*push[0] + push[1]*push[1] + push[2]*push[2])
-                        if push_len > 0.001
-                        {
-                            inv := 1.0 / push_len
-                            half_in := projectile.radius * PROJECTILE_STUCK_DEPTH
-                            projectile.pos[0] -= push[0] * inv * half_in
-                            projectile.pos[1] -= push[1] * inv * half_in
-                            projectile.pos[2] -= push[2] * inv * half_in
-                        }
-                        if len(stuck_projectiles) < MAX_STUCK_PROJECTILES
-                        {
-                            append(&stuck_projectiles, StuckProjectile{ pos = projectile.pos, radius = projectile.radius })
-                        }
-                        projectile.active = false
+                        inv := 1.0 / push_len
+                        half_in := projectile.radius * PROJECTILE_STUCK_DEPTH
+                        projectile.pos[0] -= push[0] * inv * half_in
+                        projectile.pos[1] -= push[1] * inv * half_in
+                        projectile.pos[2] -= push[2] * inv * half_in
                     }
+                    if len(stuck_projectiles) < MAX_STUCK_PROJECTILES
+                    {
+                        append(&stuck_projectiles, StuckProjectile{ pos = projectile.pos, radius = projectile.radius })
+                    }
+                    projectile.active = false
                 }
             }
         }
 
-        // Collision: voxel for walls (Jolt disabled - crashes). Floor planes for floor.
-        // Red player squash: use ellipsoid so collision matches visual; sphere allows slip-through when squashed.
-        if tree_root >= 0
-        {
-            cr := player.collision_radius
-            if player.color == WALL_COLOR_RED && (player.squash_horizontal > 0.001 || player.squash_vertical > 0.001)
-            {
-                min_r: f32 = 0.05
-                radii: [3]f32
-                if player.squash_horizontal > 0.001
-                {
-                    ry := cr * (1.0 - player.squash_horizontal * 0.75)
-                    if ry < min_r do ry = min_r
-                    radii = { cr, ry, cr }  // pancake: compress Y
-                }
-                else
-                {
-                    rx := cr * (1.0 - player.squash_vertical * 0.75)
-                    if rx < min_r do rx = min_r
-                    radii = { rx, cr, rx }  // pill: compress XZ
-                }
-                resolve_collision_ellipsoid(&tree, tree_root, &player.pos, radii, player.color, surface_colors, 12)
-            }
-            else
-            {
-                resolve_collision(&tree, tree_root, &player.pos, cr, player.color, surface_colors, 12)
-            }
-        }
+        // Collision: simple per-room + standalone wall AABBs (no voxel tree). Floor planes for floor.
+        collide_player_with_room_walls(&level, &player.pos, player.collision_radius, player.color, surface_colors, 12)
         collide_floor_planes(&level, &player.pos, effective_floor_r, player.color, surface_colors, player.vel_y)
         for _ in 0 ..< 5
         {
@@ -1463,6 +1443,15 @@ main :: proc()
             }
             floor_color_r2: f32 = 0.0
             if len(level.rooms) > 2 do floor_color_r2 = f32(surface_colors[16])
+
+            sw_center: [4]f32 = { 0.0, 0.0, 0.0, -1.0 }
+            sw_half:   [4]f32 = {}
+            if len(level.standalone_walls) > 0 {
+                sw := level.standalone_walls[0]
+                sw_center = { sw.center_x, sw.center_y, sw.center_z, f32(color_string_to_id(sw.color)) }
+                sw_half   = { sw.half_x, sw.half_y, sw.half_z, 0.0 }
+            }
+
             room_block := RoomBlock{
                 room         = { r0.half_x, r0.half_z, r0.height, r0.floor_y },
                 room2        = { r1.center_x, r1.center_z, r1.half_x, r1.half_z },
@@ -1505,6 +1494,8 @@ main :: proc()
                 room_gaps_1_hole_off_y = { h1l_off_y, h1r_off_y, h1b_off_y, h1f_off_y },
                 room_gaps_2_hole_off   = { h2l_off, h2r_off, h2b_off, h2f_off },
                 room_gaps_2_hole_off_y = { h2l_off_y, h2r_off_y, h2b_off_y, h2f_off_y },
+                standalone_wall_center = sw_center,
+                standalone_wall_half   = sw_half,
             }
 
             // Render pass
