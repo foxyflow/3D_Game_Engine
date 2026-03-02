@@ -1,6 +1,5 @@
 // jolt_physics.odin - Jolt Physics integration for 3D Game Engine.
-// Creates static world from procedural rooms. Player collision still uses voxel (fallback).
-// Jolt world ready for future: dynamic bodies, mesh loading, destructibles.
+// Environment collision via Jolt. Player stays custom (SDF render, our movement).
 package main
 
 import joltc "lib:joltc-odin"
@@ -24,13 +23,31 @@ jolt_user_data_get_color :: proc(ud: u64) -> i32 {
 	return i32(ud & 0xFF)
 }
 
-JoltPhysics :: struct {
-	job_system:     ^joltc.JobSystem,
-	system:         ^joltc.PhysicsSystem,
-	body_interface: ^joltc.BodyInterface,
-	narrow_query:   ^joltc.NarrowPhaseQuery,
-	initialized:    bool,
+jolt_user_data_get_surface_type :: proc(ud: u64) -> int {
+	return int((ud >> 8) & 0xFF)
 }
+
+JoltPhysics :: struct {
+	job_system:           ^joltc.JobSystem,
+	system:               ^joltc.PhysicsSystem,
+	body_interface:       ^joltc.BodyInterface,
+	narrow_query:         ^joltc.NarrowPhaseQuery,
+	broad_query:          ^joltc.BroadPhaseQuery,
+	sphere_shape:         ^joltc.Shape,  // unit sphere for collision queries
+	broad_phase_filter:   ^joltc.BroadPhaseLayerFilter,  // accept-all for CollideShape
+	object_layer_filter:  ^joltc.ObjectLayerFilter,
+	body_filter:          ^joltc.BodyFilter,
+	shape_filter:         ^joltc.ShapeFilter,
+	initialized:          bool,
+}
+
+// Accept-all filter callbacks (Jolt crashes on nil filters)
+@(private) jolt_filter_broad :: proc "c" (_: rawptr, _: joltc.BroadPhaseLayer) -> bool { return true }
+@(private) jolt_filter_object :: proc "c" (_: rawptr, _: joltc.ObjectLayer) -> bool { return true }
+@(private) jolt_filter_body :: proc "c" (_: rawptr, _: joltc.BodyID) -> bool { return true }
+@(private) jolt_filter_body_locked :: proc "c" (_: rawptr, _: ^joltc.Body) -> bool { return true }
+@(private) jolt_filter_shape :: proc "c" (_: rawptr, _: ^joltc.Shape, _: ^joltc.SubShapeID) -> bool { return true }
+@(private) jolt_filter_shape2 :: proc "c" (_: rawptr, _: ^joltc.Shape, _: ^joltc.SubShapeID, _: ^joltc.Shape, _: ^joltc.SubShapeID) -> bool { return true }
 
 jolt_physics: JoltPhysics
 
@@ -77,6 +94,26 @@ jolt_init :: proc(level: ^LevelData) -> bool {
 
 	jolt_physics.body_interface = joltc.PhysicsSystem_GetBodyInterface(jolt_physics.system)
 	jolt_physics.narrow_query = joltc.PhysicsSystem_GetNarrowPhaseQuery(jolt_physics.system)
+	jolt_physics.broad_query = joltc.PhysicsSystem_GetBroadPhaseQuery(jolt_physics.system)
+	jolt_physics.sphere_shape = cast(^joltc.Shape)joltc.SphereShape_Create(1.0)  // unit sphere, scale by radius
+
+	// Create accept-all filters (Jolt crashes on nil filters in CollideShape/CollidePoint)
+	bp_procs: joltc.BroadPhaseLayerFilter_Procs = { ShouldCollide = jolt_filter_broad }
+	joltc.BroadPhaseLayerFilter_SetProcs(&bp_procs)
+	jolt_physics.broad_phase_filter = joltc.BroadPhaseLayerFilter_Create(nil)
+
+	obj_procs: joltc.ObjectLayerFilter_Procs = { ShouldCollide = jolt_filter_object }
+	joltc.ObjectLayerFilter_SetProcs(&obj_procs)
+	jolt_physics.object_layer_filter = joltc.ObjectLayerFilter_Create(nil)
+
+	body_procs: joltc.BodyFilter_Procs = { ShouldCollide = jolt_filter_body, ShouldCollideLocked = jolt_filter_body_locked }
+	joltc.BodyFilter_SetProcs(&body_procs)
+	jolt_physics.body_filter = joltc.BodyFilter_Create(nil)
+
+	shape_procs: joltc.ShapeFilter_Procs = { ShouldCollide = jolt_filter_shape, ShouldCollide2 = jolt_filter_shape2 }
+	joltc.ShapeFilter_SetProcs(&shape_procs)
+	jolt_physics.shape_filter = joltc.ShapeFilter_Create(nil)
+
 	jolt_physics.initialized = true
 
 	// Build static world from level
@@ -87,6 +124,10 @@ jolt_init :: proc(level: ^LevelData) -> bool {
 
 jolt_shutdown :: proc() {
 	if !jolt_physics.initialized do return
+	if jolt_physics.broad_phase_filter != nil do joltc.BroadPhaseLayerFilter_Destroy(jolt_physics.broad_phase_filter)
+	if jolt_physics.object_layer_filter != nil do joltc.ObjectLayerFilter_Destroy(jolt_physics.object_layer_filter)
+	if jolt_physics.body_filter != nil do joltc.BodyFilter_Destroy(jolt_physics.body_filter)
+	if jolt_physics.shape_filter != nil do joltc.ShapeFilter_Destroy(jolt_physics.shape_filter)
 	joltc.PhysicsSystem_Destroy(jolt_physics.system)
 	joltc.JobSystem_Destroy(jolt_physics.job_system)
 	joltc.Shutdown()
@@ -192,4 +233,183 @@ jolt_build_static_world :: proc(level: ^LevelData) {
 	}
 
 	joltc.PhysicsSystem_OptimizeBroadPhase(jolt_physics.system)
+}
+
+// --- Player collision (sphere vs world, merge-through by color) ---
+JOLT_MAX_CONTACTS :: 32
+
+jolt_player_contact :: struct {
+	axis:  joltc.Vec3,
+	depth: f32,
+}
+
+jolt_player_collision_ctx :: struct {
+	pos:         ^[3]f32,
+	player_color: i32,
+	contacts:    [JOLT_MAX_CONTACTS]jolt_player_contact,
+	count:       int,
+}
+
+@(private)
+jolt_player_collide_callback :: proc "c" (_context: rawptr, result: ^joltc.CollideShapeResult) {
+	ctx := cast(^jolt_player_collision_ctx)_context
+	if ctx == nil || result == nil do return
+	if ctx.count >= JOLT_MAX_CONTACTS do return
+
+	ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, result.bodyID2)
+	if ud != 0 {  // user data = merge-through surfaces; ud==0 = solid (level floor)
+		body_color := i32(ud & 0xFF)
+		if body_color == ctx.player_color do return  // merge-through
+	}
+
+	c := &ctx.contacts[ctx.count]
+	c.axis = result.penetrationAxis
+	c.depth = result.penetrationDepth
+	ctx.count += 1
+}
+
+jolt_resolve_player_collision :: proc(pos: ^[3]f32, radius: f32, player_color: i32, max_iter: int = 12) {
+	if !jolt_physics.initialized || jolt_physics.sphere_shape == nil do return
+
+	scale: joltc.Vec3 = { radius, radius, radius }
+	trans: joltc.Vec3 = { pos[0], pos[1], pos[2] }
+	transform: joltc.RMat4
+	joltc.Mat4_Identity(&transform)
+	joltc.Mat4_Translation(&transform, &trans)
+
+	settings: joltc.CollideShapeSettings
+	joltc.CollideShapeSettings_Init(&settings)
+
+	ctx: jolt_player_collision_ctx = {
+		pos          = pos,
+		player_color = player_color,
+		contacts     = {},
+		count        = 0,
+	}
+
+	for _ in 0 ..< max_iter {
+		ctx.count = 0
+		joltc.NarrowPhaseQuery_CollideShape2(
+			jolt_physics.narrow_query,
+			jolt_physics.sphere_shape,
+			&scale,
+			&transform,
+			&settings,
+			nil,
+			joltc.CollisionCollectorType.AllHit,
+			jolt_player_collide_callback,
+			&ctx,
+			jolt_physics.broad_phase_filter,
+			jolt_physics.object_layer_filter,
+			jolt_physics.body_filter,
+			jolt_physics.shape_filter,
+		)
+		if ctx.count == 0 do break
+
+		// Push by largest penetration first
+		best := 0
+		for i in 1 ..< ctx.count {
+			if ctx.contacts[i].depth > ctx.contacts[best].depth do best = i
+		}
+		c := &ctx.contacts[best]
+		pos[0] += c.axis[0] * c.depth
+		pos[1] += c.axis[1] * c.depth
+		pos[2] += c.axis[2] * c.depth
+
+		trans[0], trans[1], trans[2] = pos[0], pos[1], pos[2]
+		joltc.Mat4_Translation(&transform, &trans)
+	}
+}
+
+// --- Projectile: in yellow wall? (point query) ---
+jolt_projectile_in_yellow_ctx :: struct {
+	in_yellow: bool,
+}
+
+@(private)
+jolt_projectile_in_yellow_callback :: proc "c" (_context: rawptr, result: ^joltc.CollidePointResult) {
+	ctx := cast(^jolt_projectile_in_yellow_ctx)_context
+	if ctx == nil || result == nil do return
+
+	ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, result.bodyID)
+	if i32(ud & 0xFF) == 3 {  // WALL_COLOR_YELLOW
+		ctx.in_yellow = true
+	}
+}
+
+jolt_projectile_in_yellow :: proc(pos: [3]f32) -> bool {
+	if !jolt_physics.initialized do return false
+
+	rpos: joltc.RVec3 = { pos[0], pos[1], pos[2] }
+	ctx: jolt_projectile_in_yellow_ctx = { in_yellow = false }
+
+	joltc.NarrowPhaseQuery_CollidePoint2(
+		jolt_physics.narrow_query,
+		&rpos,
+		joltc.CollisionCollectorType.AnyHit,
+		jolt_projectile_in_yellow_callback,
+		&ctx,
+		jolt_physics.broad_phase_filter,
+		jolt_physics.object_layer_filter,
+		jolt_physics.body_filter,
+		jolt_physics.shape_filter,
+	)
+	return ctx.in_yellow
+}
+
+// --- Projectile: hit non-yellow wall? (sphere query, returns hit + push) ---
+JOLT_FLOOR_INNER :: 4  // surface type for floor (skip in wall hit)
+
+jolt_projectile_hits_wall_ctx :: struct {
+	hit: bool,
+	push: [3]f32,
+}
+
+@(private)
+jolt_projectile_hits_wall_callback :: proc "c" (_context: rawptr, result: ^joltc.CollideShapeResult) {
+	ctx := cast(^jolt_projectile_hits_wall_ctx)_context
+	if ctx == nil || result == nil do return
+	if ctx.hit do return  // already found one
+
+	ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, result.bodyID2)
+	surf := int((ud >> 8) & 0xFF)
+	if surf == JOLT_FLOOR_INNER do return  // skip floor
+	if i32(ud & 0xFF) == 3 do return  // WALL_COLOR_YELLOW = merge-through
+
+	ctx.hit = true
+	ctx.push[0] = result.penetrationAxis[0] * result.penetrationDepth
+	ctx.push[1] = result.penetrationAxis[1] * result.penetrationDepth
+	ctx.push[2] = result.penetrationAxis[2] * result.penetrationDepth
+}
+
+jolt_projectile_hits_wall :: proc(pos: [3]f32, radius: f32) -> (hit: bool, push: [3]f32) {
+	if !jolt_physics.initialized || jolt_physics.sphere_shape == nil do return false, [3]f32{}
+
+	scale: joltc.Vec3 = { radius, radius, radius }
+	trans: joltc.Vec3 = { pos[0], pos[1], pos[2] }
+	transform: joltc.RMat4
+	joltc.Mat4_Identity(&transform)
+	joltc.Mat4_Translation(&transform, &trans)
+
+	settings: joltc.CollideShapeSettings
+	joltc.CollideShapeSettings_Init(&settings)
+
+	ctx: jolt_projectile_hits_wall_ctx = { hit = false, push = {} }
+
+	joltc.NarrowPhaseQuery_CollideShape2(
+		jolt_physics.narrow_query,
+		jolt_physics.sphere_shape,
+		&scale,
+		&transform,
+		&settings,
+		nil,
+		joltc.CollisionCollectorType.AnyHit,
+		jolt_projectile_hits_wall_callback,
+		&ctx,
+		jolt_physics.broad_phase_filter,
+		jolt_physics.object_layer_filter,
+		jolt_physics.body_filter,
+		jolt_physics.shape_filter,
+	)
+	return ctx.hit, ctx.push
 }

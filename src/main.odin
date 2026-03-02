@@ -1,5 +1,5 @@
 // main.odin
-// 3D SDF raymarcher with voxel AABB tree collision and merge-through-walls.
+// 3D SDF raymarcher with Jolt physics for environment collision (level2). Player stays custom SDF.
 // Controls: WASD move, Space/B jump, arrows orbit, G/B/Y/X change color. F/A = fire (yellow). P/Y = pause.
 // L1/LShift = duck (red). R1/H = gravel hook (green, placeholder). See levels/controls.json to rebind.
 // Edit mode (JSON edit_mode:true): Q/E roll, CTRL/ALT camera height. Game mode: WASD + arrows only.
@@ -690,7 +690,7 @@ main :: proc()
     }
     defer sdl.Quit()
 
-    window := sdl.CreateWindow("Voxel AABB Tree SDF Engine", 1280, 720, {})
+    window := sdl.CreateWindow("JoltEnvironmentPhysics init but not yet used. AABB still in place/SDF Player Engine. Use gamepad, Yellowball fires redball squashes", 1280, 720, {})
     if window == nil
     {
         fmt.eprintln("Window Failed:", sdl.GetError())
@@ -784,7 +784,7 @@ main :: proc()
     fmt.eprintln("[Engine] Shaders + pipeline OK")
 
     // --- Level Load ---
-    level, level_ok := load_level("levels/level1.json")
+    level, level_ok := load_level("levels/level2.json")
     if !level_ok
     {
         fmt.eprintln("Failed to load level, using defaults")
@@ -815,7 +815,8 @@ main :: proc()
     fmt.eprintln("[Engine] Controls loaded from levels/controls.json")
 
     // Surface colors: room_idx*6 + [left, right, back, front, floor_inner, floor_outer]. Max 3 rooms = 18.
-    surface_colors: [18]i32 = { 0, 0, 0, 1, 0, -1, 0, 0, 0, 1, 0, -1, 0, 0, 0, 1, 0, -1 }
+    // -1 = solid (never merge). 0-3 = red/green/blue/yellow.
+    surface_colors: [18]i32 = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }
     for room_def, room_idx in level.rooms
     {
         base := room_idx * 6
@@ -825,6 +826,12 @@ main :: proc()
             if idx >= 0 && idx < 4 do surface_colors[base + int(idx)] = color_string_to_id(w.color)
         }
         surface_colors[base + 4] = color_string_to_id(room_def.floor.color != "" ? room_def.floor.color : "red")
+        surface_colors[base + 5] = -1  // floor_outer always solid
+    }
+    // Debug: verify merge-through colors (0=red,1=green,2=blue,3=yellow)
+    for r in 0 ..< min(2, len(level.rooms)) {
+        b := r * 6
+        fmt.eprintf("[Collision] Room %d walls L/R/B/F: %d %d %d %d\n", r, surface_colors[b+0], surface_colors[b+1], surface_colors[b+2], surface_colors[b+3])
     }
     floor_y: f32 = -1.0
     if len(level.rooms) > 0 do floor_y = level.rooms[0].room.floor_y
@@ -835,6 +842,7 @@ main :: proc()
 
     // --- Player Init (from controls.json player section, or defaults) ---
     player_color := color_string_to_id(ctrl.player.color != "" ? ctrl.player.color : "red")
+    fmt.eprintf("[Collision] Player color: %d (0=R,1=G,2=B,3=Y)\n", player_color)
     collision_radius: f32 = 0.3
     spawn_height: f32 = ctrl.player.spawn_height if ctrl.player.spawn_height > 0 else 3.0
     rest_y_init := floor_y + spawn_height
@@ -862,13 +870,12 @@ main :: proc()
     for i in 0 ..< 8 do light_on[i] = level.lighting.switches[i].start_on
     switch_overlapping: [8]bool = {}  // was projectile overlapping last frame (toggle on enter only)
 
-    // --- Voxel AABB Tree (collision) ---
+    // --- Voxel AABB Tree (wall collision; Jolt disabled due to crash) ---
     tree := init_voxel_tree(&level)
     defer delete(tree.voxels)
     defer delete(tree.wall_ids)
     defer mem.delete_dynamic_array(tree.boxes)
     defer mem.delete_dynamic_array(tree.nodes)
-
     voxelize_room(&tree, &level)
     collect_boxes(&tree)
     tree_root := build_tree(&tree, context.allocator)
@@ -913,12 +920,13 @@ main :: proc()
         swapchain_tex: ^sdl.GPUTexture
         if !sdl.AcquireGPUSwapchainTexture(cmd_buffer, window, &swapchain_tex, nil, nil)
         {
+            // Too many frames in flight - submit empty and skip this frame
             if !sdl.SubmitGPUCommandBuffer(cmd_buffer)
             {
                 fmt.eprintln("Critical failure during empty submit:", sdl.GetError())
-                return 
+                running = false
             }
-            continue  // skip game update when swapchain unavailable
+            continue
         }
 
         // Delta time - fix for high fps (GetTicks has 1ms resolution; 0 = many frames/ms)
@@ -934,6 +942,7 @@ main :: proc()
         {
             if event.type == .QUIT
             {
+                fmt.eprintln("[Engine] QUIT event received")
                 running = false
             }
         }
@@ -1204,73 +1213,58 @@ main :: proc()
                 if !in_yellow
                 {
                     if hit, push := projectile_hits_wall(&tree, tree_root, projectile.pos, projectile.radius, WALL_COLOR_YELLOW, surface_colors); hit
-                {
-                    projectile.pos[0] += push[0]
-                    projectile.pos[1] += push[1]
-                    projectile.pos[2] += push[2]
-                    push_len := math.sqrt(push[0]*push[0] + push[1]*push[1] + push[2]*push[2])
-                    if push_len > 0.001
                     {
-                        inv := 1.0 / push_len
-                        half_in := projectile.radius * PROJECTILE_STUCK_DEPTH
-                        projectile.pos[0] -= push[0] * inv * half_in
-                        projectile.pos[1] -= push[1] * inv * half_in
-                        projectile.pos[2] -= push[2] * inv * half_in
-                    }
-                    if len(stuck_projectiles) < MAX_STUCK_PROJECTILES
-                    {
-                        append(&stuck_projectiles, StuckProjectile{ pos = projectile.pos, radius = projectile.radius })
-                    }
-                    projectile.active = false
+                        projectile.pos[0] += push[0]
+                        projectile.pos[1] += push[1]
+                        projectile.pos[2] += push[2]
+                        push_len := math.sqrt(push[0]*push[0] + push[1]*push[1] + push[2]*push[2])
+                        if push_len > 0.001
+                        {
+                            inv := 1.0 / push_len
+                            half_in := projectile.radius * PROJECTILE_STUCK_DEPTH
+                            projectile.pos[0] -= push[0] * inv * half_in
+                            projectile.pos[1] -= push[1] * inv * half_in
+                            projectile.pos[2] -= push[2] * inv * half_in
+                        }
+                        if len(stuck_projectiles) < MAX_STUCK_PROJECTILES
+                        {
+                            append(&stuck_projectiles, StuckProjectile{ pos = projectile.pos, radius = projectile.radius })
+                        }
+                        projectile.active = false
                     }
                 }
             }
         }
 
-        // Collision: voxel for walls, floor planes for floor. Red + squashed = ellipsoid for gaps.
-        // Horizontal (pancake): compress Y to 25%. Vertical (pill/billboard): compress XZ to 50% so pill stays wider.
-        SQUASH_FACTOR_H :: 0.25  // pancake min
-        SQUASH_FACTOR_V :: 0.5   // pill min (billboard - don't shrink to needle)
-        base_r := player.collision_radius
-        use_ellipsoid := player.color == WALL_COLOR_RED && (player.squash_horizontal > 0.01 || player.squash_vertical > 0.01)
+        // Collision: voxel for walls (Jolt disabled - crashes). Floor planes for floor.
+        // Red player squash: use ellipsoid so collision matches visual; sphere allows slip-through when squashed.
         if tree_root >= 0
         {
-            if use_ellipsoid
+            cr := player.collision_radius
+            if player.color == WALL_COLOR_RED && (player.squash_horizontal > 0.001 || player.squash_vertical > 0.001)
             {
-                rx := base_r * (1.0 - player.squash_vertical * (1.0 - SQUASH_FACTOR_V))
-                ry := base_r * (1.0 - player.squash_horizontal * (1.0 - SQUASH_FACTOR_H))
-                rz := base_r * (1.0 - player.squash_vertical * (1.0 - SQUASH_FACTOR_V))
-                if rx < 0.1 do rx = 0.1   // pill stays wide enough to not phase through
-                if ry < 0.05 do ry = 0.05
-                if rz < 0.1 do rz = 0.1
-                // Vertical-only (pill): use visual height so collision covers full extent, prevents going through walls
-                if player.squash_vertical > 0.01 && player.squash_horizontal <= 0.01
+                min_r: f32 = 0.05
+                radii: [3]f32
+                if player.squash_horizontal > 0.001
                 {
-                    ry = player.radius
+                    ry := cr * (1.0 - player.squash_horizontal * 0.75)
+                    if ry < min_r do ry = min_r
+                    radii = { cr, ry, cr }  // pancake: compress Y
                 }
-                resolve_collision_ellipsoid(&tree, tree_root, &player.pos, { rx, ry, rz }, player.color, surface_colors, 12)
+                else
+                {
+                    rx := cr * (1.0 - player.squash_vertical * 0.75)
+                    if rx < min_r do rx = min_r
+                    radii = { rx, cr, rx }  // pill: compress XZ
+                }
+                resolve_collision_ellipsoid(&tree, tree_root, &player.pos, radii, player.color, surface_colors, 12)
             }
             else
             {
-                resolve_collision(&tree, tree_root, &player.pos, player.collision_radius, player.color, surface_colors, 12)
+                resolve_collision(&tree, tree_root, &player.pos, cr, player.color, surface_colors, 12)
             }
         }
-        ry_collision := base_r * (1.0 - player.squash_horizontal * (1.0 - SQUASH_FACTOR_H))
-        if ry_collision < 0.05 do ry_collision = 0.05
-        floor_radius := player.radius
-        if player.color == WALL_COLOR_RED
-        {
-            if player.squash_horizontal > 0.001
-            {
-                floor_radius = ry_collision + (player.radius - ry_collision) * (1.0 - player.squash_horizontal)
-            }
-            else if player.squash_vertical > 0.001
-            {
-                ry := player.radius  // pill keeps full Y height (same lerp style)
-                floor_radius = ry + (player.radius - ry) * (1.0 - player.squash_vertical)
-            }
-        }
-        collide_floor_planes(&level, &player.pos, floor_radius, player.color, surface_colors, player.vel_y)
+        collide_floor_planes(&level, &player.pos, effective_floor_r, player.color, surface_colors, player.vel_y)
         for _ in 0 ..< 5
         {
             any_push := false
@@ -1394,7 +1388,6 @@ main :: proc()
 
         if swapchain_tex != nil
         {
-            if frame_count == 1 do fmt.eprintln("[Engine] First frame rendering")
             // Pack scene data for UBO (matches SceneBlock in shader)
             total_time := f32(sdl.GetTicks()) / 1000.0
             w, h: i32
