@@ -59,7 +59,9 @@ floor_inner_aabb :: proc(r: ^RoomData, wt: f32) -> AABB {
 }
 
 floor_outer_aabb :: proc(r: ^RoomData, wt: f32) -> (left, right, back, front: AABB) {
-    pad := wt * 2.0
+    // Extra solid floor outside each room so when you pass through walls
+    // you don't immediately fall forever. pad controls how far this ring extends.
+    pad := wt * 8.0
     left  = AABB{ min = { r.center_x - r.half_x - pad, r.floor_y - wt, r.center_z - r.half_z - pad }, max = { r.center_x - r.half_x,      r.floor_y, r.center_z + r.half_z + pad } }
     right = AABB{ min = { r.center_x + r.half_x,       r.floor_y - wt, r.center_z - r.half_z - pad }, max = { r.center_x + r.half_x + pad, r.floor_y, r.center_z + r.half_z + pad } }
     back  = AABB{ min = { r.center_x - r.half_x - pad, r.floor_y - wt, r.center_z - r.half_z - pad }, max = { r.center_x + r.half_x + pad, r.floor_y, r.center_z - r.half_z } }

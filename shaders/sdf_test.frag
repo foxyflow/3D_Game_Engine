@@ -17,6 +17,7 @@ layout(set = 3, binding = 0, std140) uniform SceneBlock
     vec4 u_cam_up;     // up basis vector
     vec4 u_projectile;  // xyz position, w radius (0 = inactive) - active projectile
     vec4 u_projectiles[8]; // stuck projectiles
+    vec4 u_debug;       // x: show_collision_wireframe (0 or 1)
 } ubo;
 
 // --- Room UBO: room 0 at origin, room 1 at (center_x, center_z) ---
@@ -96,6 +97,68 @@ float sdBox(vec3 p, vec3 b)
 float sdPlane(vec3 p)
 { 
     return p.y + 1.0; 
+}
+
+// --- Collision wireframe: distance from point to AABB edges (for debug overlay) ---
+float distToSegment(vec3 p, vec3 a, vec3 b)
+{
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+float distToAABBEdges(vec3 p, vec3 bmin, vec3 bmax)
+{
+    float mx = bmin.x, my = bmin.y, mz = bmin.z;
+    float Mx = bmax.x, My = bmax.y, Mz = bmax.z;
+    float d = 1000.0;
+    d = min(d, distToSegment(p, vec3(mx, my, mz), vec3(Mx, my, mz)));
+    d = min(d, distToSegment(p, vec3(mx, my, mz), vec3(mx, My, mz)));
+    d = min(d, distToSegment(p, vec3(mx, my, mz), vec3(mx, my, Mz)));
+    d = min(d, distToSegment(p, vec3(Mx, my, mz), vec3(Mx, My, mz)));
+    d = min(d, distToSegment(p, vec3(Mx, my, mz), vec3(Mx, my, Mz)));
+    d = min(d, distToSegment(p, vec3(mx, My, mz), vec3(Mx, My, mz)));
+    d = min(d, distToSegment(p, vec3(mx, My, mz), vec3(mx, My, Mz)));
+    d = min(d, distToSegment(p, vec3(mx, my, Mz), vec3(Mx, my, Mz)));
+    d = min(d, distToSegment(p, vec3(mx, my, Mz), vec3(mx, My, Mz)));
+    d = min(d, distToSegment(p, vec3(Mx, My, mz), vec3(Mx, My, Mz)));
+    d = min(d, distToSegment(p, vec3(Mx, my, Mz), vec3(Mx, My, Mz)));
+    d = min(d, distToSegment(p, vec3(mx, My, Mz), vec3(Mx, My, Mz)));
+    return d;
+}
+
+// Minimum distance from p to any collision AABB edge (room walls + standalone). Matches CPU collision boxes.
+float minDistToCollisionEdges(vec3 p)
+{
+    float roomHalfX = room.u_room.x, roomHalfZ = room.u_room.y, roomHeight = room.u_room.z, floorY = room.u_room.w;
+    float wt = room.u_extras.x;
+    float d = 1000.0;
+    // Room 0: 4 walls
+    d = min(d, distToAABBEdges(p, vec3(-roomHalfX - wt, floorY, -roomHalfZ), vec3(-roomHalfX, floorY + roomHeight, roomHalfZ)));
+    d = min(d, distToAABBEdges(p, vec3(roomHalfX, floorY, -roomHalfZ), vec3(roomHalfX + wt, floorY + roomHeight, roomHalfZ)));
+    d = min(d, distToAABBEdges(p, vec3(-roomHalfX, floorY, -roomHalfZ - wt), vec3(roomHalfX, floorY + roomHeight, -roomHalfZ)));
+    d = min(d, distToAABBEdges(p, vec3(-roomHalfX, floorY, roomHalfZ), vec3(roomHalfX, floorY + roomHeight, roomHalfZ + wt)));
+    // Room 1
+    float cx = room.u_room2.x, cz = room.u_room2.y, hx1 = room.u_room2.z, hz1 = room.u_room2.w;
+    d = min(d, distToAABBEdges(p, vec3(cx - hx1 - wt, floorY, cz - hz1), vec3(cx - hx1, floorY + roomHeight, cz + hz1)));
+    d = min(d, distToAABBEdges(p, vec3(cx + hx1, floorY, cz - hz1), vec3(cx + hx1 + wt, floorY + roomHeight, cz + hz1)));
+    d = min(d, distToAABBEdges(p, vec3(cx - hx1, floorY, cz - hz1 - wt), vec3(cx + hx1, floorY + roomHeight, cz - hz1)));
+    d = min(d, distToAABBEdges(p, vec3(cx - hx1, floorY, cz + hz1), vec3(cx + hx1, floorY + roomHeight, cz + hz1 + wt)));
+    // Room 2 (if active)
+    if (room.u_room3.z > 0.001) {
+        float cx2 = room.u_room3.x, cz2 = room.u_room3.y, hx2 = room.u_room3.z, hz2 = room.u_room3.w;
+        d = min(d, distToAABBEdges(p, vec3(cx2 - hx2 - wt, floorY, cz2 - hz2), vec3(cx2 - hx2, floorY + roomHeight, cz2 + hz2)));
+        d = min(d, distToAABBEdges(p, vec3(cx2 + hx2, floorY, cz2 - hz2), vec3(cx2 + hx2 + wt, floorY + roomHeight, cz2 + hz2)));
+        d = min(d, distToAABBEdges(p, vec3(cx2 - hx2, floorY, cz2 - hz2 - wt), vec3(cx2 + hx2, floorY + roomHeight, cz2 - hz2)));
+        d = min(d, distToAABBEdges(p, vec3(cx2 - hx2, floorY, cz2 + hz2), vec3(cx2 + hx2, floorY + roomHeight, cz2 + hz2 + wt)));
+    }
+    // Standalone wall
+    if (room.u_standalone_wall_half.x > 0.0) {
+        vec3 c = room.u_standalone_wall_center.xyz;
+        vec3 h = room.u_standalone_wall_half.xyz;
+        d = min(d, distToAABBEdges(p, c - h, c + h));
+    }
+    return d;
 }
 
 float smin(float a, float b, float k)
@@ -526,6 +589,29 @@ void main()
         vec3 color = (lightAccum * baseColor) + (spec * 0.8);
         color *= exp(-0.05 * t);
         if (mat == 11.0) color += vec3(0.4, 0.3, 0.0);  // emissive glow so projectile stands out
+
+        // Collision wireframe overlay (toggle with C): wall AABB edges + player ball collision outline
+        if (ubo.u_debug.x > 0.5) {
+            vec3 wireColor = vec3(0.2, 1.0, 0.3);
+
+            // World collision AABBs (walls + standalone)
+            float edgeDist = minDistToCollisionEdges(p);
+            float wireframeThickness = 0.02;
+            if (edgeDist < wireframeThickness) {
+                float t_w = 1.0 - smoothstep(0.0, wireframeThickness, edgeDist);
+                color = mix(color, wireColor, t_w);
+            }
+
+            // Ball collision wireframe: spherical shell at player radius (approx Jolt collision)
+            if (mat == 10.0) {
+                float d_ball = abs(length(p - ubo.u_ball.xyz) - ubo.u_ball.w);
+                float ballThickness = 0.03;
+                if (d_ball < ballThickness) {
+                    float t_b = 1.0 - smoothstep(0.0, ballThickness, d_ball);
+                    color = mix(color, wireColor, max(t_b, 0.7));
+                }
+            }
+        }
         fragColor = vec4(color, 1.0);
     }
     else  // Miss: background

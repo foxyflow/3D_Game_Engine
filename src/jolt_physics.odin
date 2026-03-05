@@ -4,7 +4,7 @@ package main
 
 import joltc "lib:joltc-odin"
 import "core:fmt"
-
+import "core:math"
 // Layer IDs for Jolt
 JOLT_LAYER_NON_MOVING: joltc.ObjectLayer = 0
 JOLT_LAYER_MOVING: joltc.ObjectLayer = 1
@@ -49,7 +49,46 @@ JoltPhysics :: struct {
 @(private) jolt_filter_shape :: proc "c" (_: rawptr, _: ^joltc.Shape, _: ^joltc.SubShapeID) -> bool { return true }
 @(private) jolt_filter_shape2 :: proc "c" (_: rawptr, _: ^joltc.Shape, _: ^joltc.SubShapeID, _: ^joltc.Shape, _: ^joltc.SubShapeID) -> bool { return true }
 
+// Filter procs must live for the entire program; Jolt stores pointers to them.
+jolt_bp_procs: joltc.BroadPhaseLayerFilter_Procs
+jolt_obj_procs: joltc.ObjectLayerFilter_Procs
+jolt_body_procs: joltc.BodyFilter_Procs
+jolt_shape_procs: joltc.ShapeFilter_Procs
+
 jolt_physics: JoltPhysics
+
+player_character: ^joltc.CharacterVirtual
+player_contact_listener_procs: joltc.CharacterContactListener_Procs
+player_contact_listener: ^joltc.CharacterContactListener
+player_current_color: i32
+
+@(private)
+jolt_player_on_contact_validate :: proc "c" (_userData: rawptr, _character: ^joltc.CharacterVirtual, bodyID2: joltc.BodyID, _subShapeID2: joltc.SubShapeID) -> bool {
+	if !jolt_physics.initialized do return true
+
+	ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, bodyID2)
+	if ud == 0 do return true
+
+	surf := int((ud >> 8) & 0xFF)
+	body_color := i32(ud & 0xFF)
+
+	// Walls (surface 0-3): merge-through when color matches player.
+	if surf >= 0 && surf <= 3 {
+		if body_color == player_current_color {
+			return false // reject this contact: player passes through same-color wall
+		}
+	}
+
+	// Room floors (FLOOR_INNER): melt-through when floor color matches player.
+	if surf == FLOOR_INNER {
+		if body_color == player_current_color {
+			return false
+		}
+	}
+
+	// Floors, standalone walls, and anything else stay solid.
+	return true
+}
 
 jolt_init :: proc(level: ^LevelData) -> bool {
 	if !joltc.Init() {
@@ -97,21 +136,22 @@ jolt_init :: proc(level: ^LevelData) -> bool {
 	jolt_physics.broad_query = joltc.PhysicsSystem_GetBroadPhaseQuery(jolt_physics.system)
 	jolt_physics.sphere_shape = cast(^joltc.Shape)joltc.SphereShape_Create(1.0)  // unit sphere, scale by radius
 
-	// Create accept-all filters (Jolt crashes on nil filters in CollideShape/CollidePoint)
-	bp_procs: joltc.BroadPhaseLayerFilter_Procs = { ShouldCollide = jolt_filter_broad }
-	joltc.BroadPhaseLayerFilter_SetProcs(&bp_procs)
+	// Create accept-all filters (Jolt crashes on nil filters in CollideShape/CollidePoint).
+	// Procs are stored in globals so Jolt can keep pointers to them safely.
+	jolt_bp_procs = joltc.BroadPhaseLayerFilter_Procs{ ShouldCollide = jolt_filter_broad }
+	joltc.BroadPhaseLayerFilter_SetProcs(&jolt_bp_procs)
 	jolt_physics.broad_phase_filter = joltc.BroadPhaseLayerFilter_Create(nil)
 
-	obj_procs: joltc.ObjectLayerFilter_Procs = { ShouldCollide = jolt_filter_object }
-	joltc.ObjectLayerFilter_SetProcs(&obj_procs)
+	jolt_obj_procs = joltc.ObjectLayerFilter_Procs{ ShouldCollide = jolt_filter_object }
+	joltc.ObjectLayerFilter_SetProcs(&jolt_obj_procs)
 	jolt_physics.object_layer_filter = joltc.ObjectLayerFilter_Create(nil)
 
-	body_procs: joltc.BodyFilter_Procs = { ShouldCollide = jolt_filter_body, ShouldCollideLocked = jolt_filter_body_locked }
-	joltc.BodyFilter_SetProcs(&body_procs)
+	jolt_body_procs = joltc.BodyFilter_Procs{ ShouldCollide = jolt_filter_body, ShouldCollideLocked = jolt_filter_body_locked }
+	joltc.BodyFilter_SetProcs(&jolt_body_procs)
 	jolt_physics.body_filter = joltc.BodyFilter_Create(nil)
 
-	shape_procs: joltc.ShapeFilter_Procs = { ShouldCollide = jolt_filter_shape, ShouldCollide2 = jolt_filter_shape2 }
-	joltc.ShapeFilter_SetProcs(&shape_procs)
+	jolt_shape_procs = joltc.ShapeFilter_Procs{ ShouldCollide = jolt_filter_shape, ShouldCollide2 = jolt_filter_shape2 }
+	joltc.ShapeFilter_SetProcs(&jolt_shape_procs)
 	jolt_physics.shape_filter = joltc.ShapeFilter_Create(nil)
 
 	jolt_physics.initialized = true
@@ -124,6 +164,16 @@ jolt_init :: proc(level: ^LevelData) -> bool {
 
 jolt_shutdown :: proc() {
 	if !jolt_physics.initialized do return
+
+	if player_character != nil {
+		joltc.CharacterBase_Destroy(cast(^joltc.CharacterBase)player_character)
+		player_character = nil
+	}
+	if player_contact_listener != nil {
+		joltc.CharacterContactListener_Destroy(player_contact_listener)
+		player_contact_listener = nil
+	}
+
 	if jolt_physics.broad_phase_filter != nil do joltc.BroadPhaseLayerFilter_Destroy(jolt_physics.broad_phase_filter)
 	if jolt_physics.object_layer_filter != nil do joltc.ObjectLayerFilter_Destroy(jolt_physics.object_layer_filter)
 	if jolt_physics.body_filter != nil do joltc.BodyFilter_Destroy(jolt_physics.body_filter)
@@ -139,28 +189,6 @@ jolt_build_static_world :: proc(level: ^LevelData) {
 	bi := jolt_physics.body_interface
 	wt := level.wall_thickness
 	level_floor := level_floor_aabb(level)
-
-	// Level floor (solid, no merge-through)
-	floor_half: [3]f32 = {
-		(level_floor.max[0] - level_floor.min[0]) * 0.5 + wt,
-		wt * 0.5,
-		(level_floor.max[2] - level_floor.min[2]) * 0.5 + wt,
-	}
-	floor_center: [3]f32 = {
-		(level_floor.min[0] + level_floor.max[0]) * 0.5,
-		level_floor.min[1] + wt * 0.5,
-		(level_floor.min[2] + level_floor.max[2]) * 0.5,
-	}
-	floor_shape := joltc.BoxShape_Create(&floor_half, joltc.DEFAULT_CONVEX_RADIUS)
-	floor_settings := joltc.BodyCreationSettings_Create3(
-		cast(^joltc.Shape)floor_shape,
-		&floor_center,
-		nil,
-		.Static,
-		JOLT_LAYER_NON_MOVING,
-	)
-	defer joltc.BodyCreationSettings_Destroy(floor_settings)
-	_ = joltc.BodyInterface_CreateAndAddBody(bi, floor_settings, .DontActivate)
 
 	// Per-room walls and floors (for merge-through: store color in user data)
 	for room_idx in 0 ..< len(level.rooms) {
@@ -191,6 +219,35 @@ jolt_build_static_world :: proc(level: ^LevelData) {
 		defer joltc.BodyCreationSettings_Destroy(fi_settings)
 		fi_id := joltc.BodyInterface_CreateAndAddBody(bi, fi_settings, .DontActivate)
 		joltc.BodyInterface_SetUserData(bi, fi_id, jolt_user_data_color(room_idx, FLOOR_INNER, floor_color))
+
+		// Floor outer ring: always solid, fills gaps between rooms so you don't fall forever when going through walls.
+		left_outer, right_outer, back_outer, front_outer := floor_outer_aabb(r, wt)
+		outer_list: [4]AABB = { left_outer, right_outer, back_outer, front_outer }
+		for oi in 0 ..< 4 {
+			aabb := outer_list[oi]
+			half_out: [3]f32 = {
+				(aabb.max[0] - aabb.min[0]) * 0.5,
+				(aabb.max[1] - aabb.min[1]) * 0.5,
+				(aabb.max[2] - aabb.min[2]) * 0.5,
+			}
+			center_out: [3]f32 = {
+				(aabb.min[0] + aabb.max[0]) * 0.5,
+				(aabb.min[1] + aabb.max[1]) * 0.5,
+				(aabb.min[2] + aabb.max[2]) * 0.5,
+			}
+			out_shape := joltc.BoxShape_Create(&half_out, joltc.DEFAULT_CONVEX_RADIUS)
+			out_settings := joltc.BodyCreationSettings_Create3(
+				cast(^joltc.Shape)out_shape,
+				&center_out,
+				nil,
+				.Static,
+				JOLT_LAYER_NON_MOVING,
+			)
+			defer joltc.BodyCreationSettings_Destroy(out_settings)
+			out_id := joltc.BodyInterface_CreateAndAddBody(bi, out_settings, .DontActivate)
+			// FLOOR_OUTER: always solid, color -1 (ignored by merge-through rules).
+			joltc.BodyInterface_SetUserData(bi, out_id, jolt_user_data_color(room_idx, FLOOR_OUTER, -1))
+		}
 
 		// Walls (left, right, back, front) - get color by wall type
 		get_wall_color :: proc(room_def: ^RoomDef, wall_idx: int) -> i32 {
@@ -232,15 +289,140 @@ jolt_build_static_world :: proc(level: ^LevelData) {
 		}
 	}
 
+	// Standalone walls: always solid (no merge-through). Color only for rendering.
+	for i in 0 ..< len(level.standalone_walls) {
+		sw := level.standalone_walls[i]
+		half: [3]f32 = {
+			sw.half_x,
+			sw.half_y,
+			sw.half_z,
+		}
+		center: [3]f32 = {
+			sw.center_x,
+			sw.center_y,
+			sw.center_z,
+		}
+		sw_shape := joltc.BoxShape_Create(&half, joltc.DEFAULT_CONVEX_RADIUS)
+		sw_settings := joltc.BodyCreationSettings_Create3(
+			cast(^joltc.Shape)sw_shape,
+			&center,
+			nil,
+			.Static,
+			JOLT_LAYER_NON_MOVING,
+		)
+		defer joltc.BodyCreationSettings_Destroy(sw_settings)
+		sw_id := joltc.BodyInterface_CreateAndAddBody(bi, sw_settings, .DontActivate)
+		// surface_type 8 = standalone; treated as non-wall in character filter so it's always solid.
+		sw_color := color_string_to_id(sw.color)
+		joltc.BodyInterface_SetUserData(bi, sw_id, jolt_user_data_color(0, 8, sw_color))
+	}
+
 	joltc.PhysicsSystem_OptimizeBroadPhase(jolt_physics.system)
+}
+
+// --- CharacterVirtual player controller (used for green ball first) ---
+
+jolt_player_character_init :: proc(player: ^Player) {
+	if !jolt_physics.initialized || player == nil do return
+	if player_character != nil do return
+
+	settings: joltc.CharacterVirtualSettings
+	joltc.CharacterVirtualSettings_Init(&settings)
+
+	// Basic up direction and slope settings
+	settings.base.up = joltc.Vec3{ 0, 1, 0 }
+	settings.base.maxSlopeAngle = 60.0 * (math.PI / 180.0)
+
+	// Simple body properties
+	settings.mass = 1.0
+	settings.maxStrength = 1000.0
+	settings.backFaceMode = .IgnoreBackFaces
+	settings.predictiveContactDistance = 0.1
+	settings.maxCollisionIterations = 8
+	settings.maxConstraintIterations = 3
+	settings.collisionTolerance = 0.05
+	settings.characterPadding = 0.02
+
+	// Shape: sphere matching our collision radius
+	radius := player.collision_radius
+	if radius <= 0.0 do radius = 0.3
+	char_shape := joltc.SphereShape_Create(radius)
+	settings.base.shape = cast(^joltc.Shape)char_shape
+
+	start_pos: joltc.RVec3 = { player.pos[0], player.pos[1], player.pos[2] }
+	angles := joltc.Vec3{ 0, 0, 0 }
+	rot: joltc.Quat
+	joltc.Quat_FromEulerAngles(&angles, &rot)
+
+	player_character = joltc.CharacterVirtual_Create(&settings, &start_pos, &rot, 0, jolt_physics.system)
+	if player_character == nil {
+		fmt.eprintln("[Jolt] CharacterVirtual_Create failed")
+		return
+	}
+
+	// Set up contact listener once, then attach to character.
+	if player_contact_listener == nil {
+		player_contact_listener_procs = joltc.CharacterContactListener_Procs{}
+		player_contact_listener_procs.OnContactValidate = jolt_player_on_contact_validate
+		joltc.CharacterContactListener_SetProcs(&player_contact_listener_procs)
+		player_contact_listener = joltc.CharacterContactListener_Create(nil)
+	}
+	joltc.CharacterVirtual_SetListener(player_character, player_contact_listener)
+
+	fmt.eprintln("[Jolt] CharacterVirtual created for player")
+}
+
+jolt_player_character_step :: proc(player: ^Player, delta_time: f32) {
+	if !jolt_physics.initialized || player == nil do return
+	if player_character == nil do jolt_player_character_init(player)
+	if player_character == nil do return
+
+	vel: joltc.Vec3 = { player.vel_x, player.vel_y, player.vel_z }
+	joltc.CharacterVirtual_SetLinearVelocity(player_character, &vel)
+
+	joltc.CharacterVirtual_Update(
+		player_character,
+		delta_time,
+		JOLT_LAYER_MOVING,
+		jolt_physics.system,
+		jolt_physics.body_filter,
+		jolt_physics.shape_filter,
+	)
+
+	// Read back position and velocity for SDF render + gameplay
+	pos_r: joltc.RVec3
+	joltc.CharacterVirtual_GetPosition(player_character, &pos_r)
+	player.pos[0] = pos_r[0]
+	player.pos[1] = pos_r[1]
+	player.pos[2] = pos_r[2]
+
+	new_vel: joltc.Vec3
+	joltc.CharacterVirtual_GetLinearVelocity(player_character, &new_vel)
+	player.vel_x = new_vel[0]
+	player.vel_y = new_vel[1]
+	player.vel_z = new_vel[2]
+}
+
+jolt_player_character_sync_from_player :: proc(player: ^Player) {
+	if !jolt_physics.initialized || player == nil || player_character == nil do return
+	pos_r: joltc.RVec3 = { player.pos[0], player.pos[1], player.pos[2] }
+	joltc.CharacterVirtual_SetPosition(player_character, &pos_r)
+}
+
+jolt_player_character_on_ground :: proc() -> bool {
+	if !jolt_physics.initialized || player_character == nil do return false
+	base := cast(^joltc.CharacterBase)player_character
+	state := joltc.CharacterBase_GetGroundState(base)
+	return state == .OnGround || state == .OnSteepGround
 }
 
 // --- Player collision (sphere vs world, merge-through by color) ---
 JOLT_MAX_CONTACTS :: 32
 
 jolt_player_contact :: struct {
-	axis:  joltc.Vec3,
-	depth: f32,
+	axis:    joltc.Vec3,
+	depth:   f32,
+	bodyID2: joltc.BodyID,
 }
 
 jolt_player_collision_ctx :: struct {
@@ -250,28 +432,33 @@ jolt_player_collision_ctx :: struct {
 	count:       int,
 }
 
+// Callback only copies contact data; no GetUserData here (can crash when called from Jolt's thread).
 @(private)
 jolt_player_collide_callback :: proc "c" (_context: rawptr, result: ^joltc.CollideShapeResult) {
 	ctx := cast(^jolt_player_collision_ctx)_context
 	if ctx == nil || result == nil do return
 	if ctx.count >= JOLT_MAX_CONTACTS do return
 
-	ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, result.bodyID2)
-	if ud != 0 {  // user data = merge-through surfaces; ud==0 = solid (level floor)
-		body_color := i32(ud & 0xFF)
-		if body_color == ctx.player_color do return  // merge-through
-	}
+	axis := result.penetrationAxis
+	depth := result.penetrationDepth
+	bodyID2 := result.bodyID2
 
 	c := &ctx.contacts[ctx.count]
-	c.axis = result.penetrationAxis
-	c.depth = result.penetrationDepth
+	c.axis = axis
+	c.depth = depth
+	c.bodyID2 = bodyID2
 	ctx.count += 1
 }
 
 jolt_resolve_player_collision :: proc(pos: ^[3]f32, radius: f32, player_color: i32, max_iter: int = 12) {
+	jolt_resolve_player_collision_scaled(pos, radius, radius, radius, player_color, max_iter)
+}
+
+// Scaled sphere (ellipsoid-like) for red ball: scale_x/y/z = radii (squash compresses Y or XZ).
+jolt_resolve_player_collision_scaled :: proc(pos: ^[3]f32, scale_x, scale_y, scale_z: f32, player_color: i32, max_iter: int = 12) {
 	if !jolt_physics.initialized || jolt_physics.sphere_shape == nil do return
 
-	scale: joltc.Vec3 = { radius, radius, radius }
+	scale: joltc.Vec3 = { scale_x, scale_y, scale_z }
 	trans: joltc.Vec3 = { pos[0], pos[1], pos[2] }
 	transform: joltc.RMat4
 	joltc.Mat4_Identity(&transform)
@@ -287,6 +474,8 @@ jolt_resolve_player_collision :: proc(pos: ^[3]f32, radius: f32, player_color: i
 		count        = 0,
 	}
 
+	// baseOffset must be a valid pointer (Jolt dereferences it; nil caused access violation).
+	base_offset: joltc.RVec3 = { 0, 0, 0 }
 	for _ in 0 ..< max_iter {
 		ctx.count = 0
 		joltc.NarrowPhaseQuery_CollideShape2(
@@ -295,7 +484,7 @@ jolt_resolve_player_collision :: proc(pos: ^[3]f32, radius: f32, player_color: i
 			&scale,
 			&transform,
 			&settings,
-			nil,
+			&base_offset,
 			joltc.CollisionCollectorType.AllHit,
 			jolt_player_collide_callback,
 			&ctx,
@@ -305,12 +494,24 @@ jolt_resolve_player_collision :: proc(pos: ^[3]f32, radius: f32, player_color: i
 			jolt_physics.shape_filter,
 		)
 		if ctx.count == 0 do break
+		// Clamp in case Jolt callback was invoked more than JOLT_MAX_CONTACTS (avoids out-of-bounds).
+		if ctx.count > JOLT_MAX_CONTACTS do ctx.count = JOLT_MAX_CONTACTS
 
-		// Push by largest penetration first
-		best := 0
-		for i in 1 ..< ctx.count {
-			if ctx.contacts[i].depth > ctx.contacts[best].depth do best = i
+		// Filter merge-through: resolve only contacts with bodies we don't pass through (GetUserData on main thread).
+		// Floor (surface type 4 or 5) is always solid so the ball can stand; only walls (0-3) merge when same color.
+		best := -1
+		for i in 0 ..< ctx.count {
+			ud := joltc.BodyInterface_GetUserData(jolt_physics.body_interface, ctx.contacts[i].bodyID2)
+			if ud != 0 {
+				surf := int((ud >> 8) & 0xFF)
+				body_color := i32(ud & 0xFF)
+				// Same-color walls = merge-through; floor (FLOOR_INNER/FLOOR_OUTER) = always solid
+				if surf >= 0 && surf <= 3 && body_color == player_color do continue
+			}
+			if best < 0 || ctx.contacts[i].depth > ctx.contacts[best].depth do best = i
 		}
+		if best < 0 do break
+		if best >= ctx.count do break  // safety: never use out-of-range index
 		c := &ctx.contacts[best]
 		pos[0] += c.axis[0] * c.depth
 		pos[1] += c.axis[1] * c.depth

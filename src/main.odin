@@ -39,6 +39,7 @@ SceneData :: struct
     cam_up:     [4]f32, // camera code: up      basis vector
     projectile:  [4]f32,  // [pos_x, pos_y, pos_z, radius] — active projectile
     projectiles: [8][4]f32, // stuck projectiles [pos_x, pos_y, pos_z, radius], radius 0 = empty
+    debug:       [4]f32,  // [show_collision_wireframe 0/1, _unused, _unused, _unused]
 }
 
 // Yellow fire ability: projectile constants
@@ -856,14 +857,14 @@ main :: proc()
     floor_y: f32 = -1.0
     if len(level.rooms) > 0 do floor_y = level.rooms[0].room.floor_y
 
-    // --- Jolt Physics (static world from rooms; player collision still uses AABB helpers) ---
+    // --- Jolt Physics (static world from rooms; player collision uses AABB for all colors for now) ---
     jolt_ok := jolt_init(&level)
-    defer if jolt_ok do jolt_shutdown()
 
     // --- Player Init (from controls.json player section, or defaults) ---
     player_color := color_string_to_id(ctrl.player.color != "" ? ctrl.player.color : "red")
     fmt.eprintf("[Collision] Player color: %d (0=R,1=G,2=B,3=Y)\n", player_color)
-    collision_radius: f32 = 0.3
+    // Match Jolt collision sphere to visual SDF ball so the ball sits exactly on the floor.
+    collision_radius: f32 = 0.5
     spawn_height: f32 = ctrl.player.spawn_height if ctrl.player.spawn_height > 0 else 3.0
     rest_y_init := floor_y + spawn_height
     player := Player{
@@ -906,7 +907,9 @@ main :: proc()
     frame_count: int = 0
     prev_x_pressed: bool = false  // for X button cycle (edge detect)
     prev_pause_pressed: bool = false
+    prev_c_pressed: bool = false  // C = collision wireframe toggle (edge detect)
     game_paused: bool = false    // P/Y toggles (placeholder for in-game menu)
+    show_collision_wireframe: bool = false  // C toggles: draw AABB edges over geometry for debugging
 
     // Orbit distance and height for 3rd-person camera
     cam_distance: f32 = 5.0
@@ -975,6 +978,11 @@ main :: proc()
         if pause_pressed && !prev_pause_pressed do game_paused = !game_paused
         prev_pause_pressed = pause_pressed
 
+        // Collision wireframe: C toggles (debug overlay of AABB edges)
+        c_pressed := key_ok && key_pressed(keys, sdl.Scancode.C)
+        if c_pressed && !prev_c_pressed do show_collision_wireframe = !show_collision_wireframe
+        prev_c_pressed = c_pressed
+
         move_speed: f32 = ctrl.player.move_speed if ctrl.player.move_speed > 0 else 6.0
         move_accel: f32 = ctrl.player.move_accel if ctrl.player.move_accel > 0 else 25.0
         move_decel: f32 = ctrl.player.move_decel if ctrl.player.move_decel > 0 else 18.0
@@ -1008,7 +1016,15 @@ main :: proc()
         {
         // Jump: from controls (Space/B/L2)
         space_pressed := action_pressed(ctrl.jump, keys, key_ok, gamepad)
-        on_floor := player.pos[1] <= rest_y + 0.05
+        on_floor: bool
+        if jolt_ok
+        {
+            on_floor = jolt_player_character_on_ground()
+        }
+        else
+        {
+            on_floor = player.pos[1] <= rest_y + 0.05
+        }
         on_stuck: bool = false
         for sp in stuck_projectiles
         {
@@ -1027,7 +1043,10 @@ main :: proc()
         if frame_count > 2
         {
             player.vel_y -= gravity * delta_time
-            player.pos[1] += player.vel_y * delta_time
+            if !jolt_ok
+            {
+                player.pos[1] += player.vel_y * delta_time
+            }
         }
 
         // Movement: from controls (WASD + D-pad + stick). In edit mode, D-pad reserved for camera.
@@ -1082,8 +1101,11 @@ main :: proc()
             player.vel_x *= scale
             player.vel_z *= scale
         }
-        player.pos[0] += player.vel_x * delta_time
-        player.pos[2] += player.vel_z * delta_time
+        if !jolt_ok
+        {
+            player.pos[0] += player.vel_x * delta_time
+            player.pos[2] += player.vel_z * delta_time
+        }
 
         // R/G/B/Y or X button: change color (Red/Green/Blue/Yellow). Match wall color to merge through.
         if key_ok
@@ -1099,6 +1121,11 @@ main :: proc()
             player.color = (player.color + 1) % 4  // cycle R->G->B->Y->R
         }
         prev_x_pressed = x_pressed
+
+        if jolt_ok
+        {
+            player_current_color = player.color
+        }
 
         // Red duck: player_red horizontal = pancake, vertical = pill. squash_exclusive: only one at a time.
         SQUASH_SPEED :: 2.5  // how fast squash lerps in/out
@@ -1242,9 +1269,16 @@ main :: proc()
             }
         }
 
-        // Collision: simple per-room + standalone wall AABBs (no voxel tree). Floor planes for floor.
-        collide_player_with_room_walls(&level, &player.pos, player.collision_radius, player.color, surface_colors, 12)
-        collide_floor_planes(&level, &player.pos, effective_floor_r, player.color, surface_colors, player.vel_y)
+        // Collision: when Jolt is enabled, all colors use CharacterVirtual controller; fallback is AABB.
+        if jolt_ok
+        {
+            jolt_player_character_step(&player, delta_time)
+        }
+        else
+        {
+            collide_player_with_room_walls(&level, &player.pos, player.collision_radius, player.color, surface_colors, 12)
+            collide_floor_planes(&level, &player.pos, effective_floor_r, player.color, surface_colors, player.vel_y)
+        }
         for _ in 0 ..< 5
         {
             any_push := false
@@ -1262,6 +1296,11 @@ main :: proc()
             if !any_push do break
         }
 
+        if jolt_ok
+        {
+            jolt_player_character_sync_from_player(&player)
+        }
+
         // Sanity: only reset on actual NaN (position corruption)
         px, py, pz := player.pos[0], player.pos[1], player.pos[2]
         if (px != px) || (py != py) || (pz != pz)
@@ -1271,7 +1310,7 @@ main :: proc()
         }
 
         // Floor snap: when resting on solid floor, snap to reduce shake. Zero vel_y when landed.
-        if !matching_floor
+        if !matching_floor && !jolt_ok
         {
             if player.pos[1] >= rest_y - 0.02 && player.pos[1] <= rest_y + 0.02
             {
@@ -1382,6 +1421,7 @@ main :: proc()
                 if i >= 8 do break
                 projs[i] = { sp.pos[0], sp.pos[1], sp.pos[2], sp.radius }
             }
+            wireframe_f: f32 = 1.0 if show_collision_wireframe else 0.0
             scene_struct := SceneData{
                 screen      = { f32(w), f32(h), total_time, 0.0 },
                 ball        = { player.pos[0], player.pos[1], player.pos[2], player.radius },
@@ -1392,6 +1432,7 @@ main :: proc()
                 cam_up      = { cam.up[0],      cam.up[1],      cam.up[2],      0.0 },
                 projectile  = { projectile.pos[0], projectile.pos[1], projectile.pos[2], proj_radius },
                 projectiles = projs,
+                debug       = { wireframe_f, 0.0, 0.0, 0.0 },
             }
 
             r0 := level.rooms[0].room if len(level.rooms) > 0 else RoomData{ 0, 0, 4, 6, 3, -1 }
@@ -1532,6 +1573,7 @@ main :: proc()
 
     // --- Cleanup ---
     fmt.eprintln("[Engine] Exiting main loop, cleaning up")
+    if jolt_ok do jolt_shutdown()
     sdl.ReleaseGPUShader(gpu, vert_shader)
     sdl.ReleaseGPUShader(gpu, frag_shader)
     sdl.ReleaseGPUGraphicsPipeline(gpu, pipeline)
